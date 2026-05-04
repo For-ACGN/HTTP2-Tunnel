@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/For-ACGN/autocert"
-	"github.com/For-ACGN/utls"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/netutil"
@@ -41,7 +40,6 @@ type Server struct {
 	timeout    time.Duration
 	maxBufSize int
 
-	acl *autocert.Listener
 	dir string
 	hfs http.Handler
 
@@ -61,10 +59,6 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	if len(passHash) != 64 {
 		return nil, errors.New("invalid password hash length")
-	}
-	phBin, err := hex.DecodeString(passHash)
-	if err != nil {
-		return nil, errors.Wrap(err, "invalid password hash format")
 	}
 	pathHash := passHash[:8] + passHash[32:32+8]
 	timeout := time.Duration(config.HTTP.Timeout)
@@ -91,47 +85,34 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	// apply maximum connections
 	listener = netutil.LimitListener(listener, maxConns)
-	var (
-		acl *autocert.Listener
-		cfg *utls.Config
-	)
 	switch config.TLS.Mode {
 	case TLSModeACME:
 		ac := autocert.Config{
 			Domains:   config.TLS.ACME.Domains,
 			ForceHTTP: true,
+			TLSConfig: &tls.Config{
+				NextProtos: tlsNextProtos,
+			},
 		}
-		acl, err = autocert.NewListener(ctx, listener, &ac)
+		listener, err = autocert.NewListener(ctx, listener, &ac)
 		if err != nil {
 			return nil, err
 		}
-		cfg = &utls.Config{
-			GetCertificate: func(hello *utls.ClientHelloInfo) (*utls.Certificate, error) {
-				h := &tls.ClientHelloInfo{
-					ServerName:   hello.ServerName,
-					CipherSuites: hello.CipherSuites,
-				}
-				cert, err := acl.GetCertificate(h)
-				if err != nil {
-					return nil, err
-				}
-				return toUTLSCertificate(cert), nil
-			},
-		}
 	case TLSModeStatic:
 		kp := config.TLS.Static
-		cert, err := utls.LoadX509KeyPair(kp.Cert, kp.Key)
+		cert, err := tls.LoadX509KeyPair(kp.Cert, kp.Key)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to load TLS certificate and key")
 		}
-		cfg = &utls.Config{
-			Certificates: []utls.Certificate{cert},
+		cfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   tlsNextProtos,
 		}
+		listener = tls.NewListener(listener, cfg)
 	default:
 		return nil, fmt.Errorf("unknown TLS mode: %s", config.TLS.Mode)
 	}
-	cfg.NextProtos = tlsNextProtos
-	listener = newUTLSListener(listener, cfg, phBin)
+	listener = newHTTP2Listener(listener)
 	// create http server
 	serverMux := http.NewServeMux()
 	srv := http.Server{
@@ -151,7 +132,6 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		timeout:    timeout,
 		maxBufSize: maxBufSize,
 
-		acl: acl,
 		dir: webDir,
 		hfs: http.FileServer(http.Dir(webDir)),
 
@@ -371,9 +351,6 @@ func (s *Server) Serve() error {
 
 // Close is used to close http server.
 func (s *Server) Close() error {
-	if s.acl != nil {
-		_ = s.acl.Close()
-	}
 	err := s.server.Close()
 	_ = s.listener.Close()
 	s.logger.Info("server is closed")
