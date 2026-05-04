@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/For-ACGN/utls"
+	"github.com/pkg/errors"
 )
 
 var tlsNextProtos = []string{"h2", "http/1.1"}
@@ -100,6 +101,35 @@ func (uc *utlsConn) Write(b []byte) (int, error) {
 		uc.covert = false
 	}
 	return uc.Conn.Write(b)
+}
+
+// for select the http1 or http2 server.
+type onceListener struct {
+	conn net.Conn
+	acc  bool
+	mu   sync.Mutex
+}
+
+func newOnceListener(conn net.Conn) *onceListener {
+	return &onceListener{conn: conn}
+}
+
+func (ol *onceListener) Accept() (net.Conn, error) {
+	ol.mu.Lock()
+	defer ol.mu.Unlock()
+	if ol.acc {
+		return nil, errors.New("listener already accepted")
+	}
+	ol.acc = true
+	return ol.conn, nil
+}
+
+func (ol *onceListener) Addr() net.Addr {
+	return ol.conn.LocalAddr()
+}
+
+func (ol *onceListener) Close() error {
+	return ol.conn.Close()
 }
 
 // check the prefix 17 bits are all zero.
