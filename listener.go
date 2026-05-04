@@ -102,7 +102,7 @@ func (uc *utlsConn) Write(b []byte) (int, error) {
 	return uc.Conn.Write(b)
 }
 
-// check the first 18 bit are all zero.
+// check the prefix 17 bits are all zero.
 func isCovertDigest(digest []byte) bool {
-	return digest[0] == 0x00 && digest[1] == 0x00 && digest[2]>>6 == 0x00
+	return digest[0] == 0x00 && digest[1] == 0x00 && digest[2]>>7 == 0x00
 }
