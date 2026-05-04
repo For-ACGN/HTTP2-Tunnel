@@ -30,8 +30,6 @@ const (
 	defaultServerTimeout = 2 * time.Minute
 )
 
-var tlsNextProtos = []string{"h2", "http/1.1"}
-
 // Server is a SOCKS-over-HTTPS server.
 type Server struct {
 	logger *logger
@@ -40,11 +38,14 @@ type Server struct {
 	timeout    time.Duration
 	maxBufSize int
 
+	acl *autocert.Listener
 	dir string
 	hfs http.Handler
 
 	listener net.Listener
-	server   *http.Server
+
+	http1 *http.Server
+	http2 *http.Server
 }
 
 // NewServer is used to create a SoH server.
@@ -59,6 +60,10 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	if len(passHash) != 64 {
 		return nil, errors.New("invalid password hash length")
+	}
+	phBin, err := hex.DecodeString(passHash)
+	if err != nil {
+		return nil, errors.Wrap(err, "invalid password hash format")
 	}
 	pathHash := passHash[:8] + passHash[32:32+8]
 	timeout := time.Duration(config.HTTP.Timeout)
@@ -85,18 +90,22 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	// apply maximum connections
 	listener = netutil.LimitListener(listener, maxConns)
+	var (
+		acl *autocert.Listener
+		cfg *tls.Config
+	)
 	switch config.TLS.Mode {
 	case TLSModeACME:
 		ac := autocert.Config{
 			Domains:   config.TLS.ACME.Domains,
 			ForceHTTP: true,
-			TLSConfig: &tls.Config{
-				NextProtos: tlsNextProtos,
-			},
 		}
-		listener, err = autocert.NewListener(ctx, listener, &ac)
+		acl, err = autocert.NewListener(ctx, listener, &ac)
 		if err != nil {
 			return nil, err
+		}
+		cfg = &tls.Config{
+			GetCertificate: acl.GetCertificate,
 		}
 	case TLSModeStatic:
 		kp := config.TLS.Static
@@ -104,27 +113,14 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to load TLS certificate and key")
 		}
-		cfg := &tls.Config{
+		cfg = &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			NextProtos:   tlsNextProtos,
 		}
-		listener = tls.NewListener(listener, cfg)
 	default:
 		return nil, fmt.Errorf("unknown TLS mode: %s", config.TLS.Mode)
 	}
-	listener = newHTTP2Listener(listener)
-	// create http server
-	serverMux := http.NewServeMux()
-	srv := http.Server{
-		Handler:           serverMux,
-		ReadHeaderTimeout: timeout,
-		IdleTimeout:       timeout,
-	}
-	// explicitly enable HTTP/1.1 and HTTP/2
-	srv.Protocols = new(http.Protocols)
-	srv.Protocols.SetHTTP1(true)
-	srv.Protocols.SetHTTP2(true)
-	srv.Protocols.SetUnencryptedHTTP2(true)
+	listener = newUTLSListener(listener, cfg, phBin)
+	// create http servers
 	server := Server{
 		logger: logger,
 
@@ -132,17 +128,40 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		timeout:    timeout,
 		maxBufSize: maxBufSize,
 
+		acl: acl,
 		dir: webDir,
 		hfs: http.FileServer(http.Dir(webDir)),
 
 		listener: listener,
-		server:   &srv,
 	}
+	serverMux := http.NewServeMux()
 	serverMux.HandleFunc("/", server.handleIndex)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/login", pathHash), server.handleLogin)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/logout", pathHash), server.handleLogout)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/ping", pathHash), server.handlePing)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/connect", pathHash), server.handleConnect)
+	// explicitly enable HTTP/1.1 and HTTP/2
+	http1 := &http.Server{
+		Handler:           serverMux,
+		ReadHeaderTimeout: timeout,
+		IdleTimeout:       timeout,
+	}
+	http1.Protocols = new(http.Protocols)
+	http1.Protocols.SetHTTP1(true)
+	http1.Protocols.SetHTTP2(true)
+	http1.Protocols.SetUnencryptedHTTP2(true)
+	// explicitly enable HTTP/2 only
+	http2 := &http.Server{
+		Handler:           serverMux,
+		ReadHeaderTimeout: timeout,
+		IdleTimeout:       timeout,
+	}
+	http2.Protocols = new(http.Protocols)
+	http2.Protocols.SetHTTP1(false)
+	http2.Protocols.SetHTTP2(true)
+	http2.Protocols.SetUnencryptedHTTP2(false)
+	server.http1 = http1
+	server.http2 = http2
 	return &server, nil
 }
 
@@ -351,9 +370,14 @@ func (s *Server) Serve() error {
 
 // Close is used to close http server.
 func (s *Server) Close() error {
-	err := s.server.Close()
-	_ = s.listener.Close()
+	if s.acl != nil {
+		_ = s.acl.Close()
+	} else {
+		_ = s.listener.Close()
+	}
+	_ = s.http1.Close()
+	_ = s.http2.Close()
 	s.logger.Info("server is closed")
 	_ = s.logger.Close()
-	return err
+	return nil
 }
