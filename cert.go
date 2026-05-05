@@ -1,12 +1,10 @@
 package msocks
 
 import (
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 
-	"github.com/For-ACGN/utls"
 	"github.com/pkg/errors"
 )
 
@@ -34,19 +32,4 @@ func parseCertificatesPEM(pb []byte) ([]*x509.Certificate, error) {
 		}
 	}
 	return certs, nil
-}
-
-func toUTLSCertificate(cert *tls.Certificate) *utls.Certificate {
-	crt := &utls.Certificate{
-		Certificate:                 cert.Certificate,
-		PrivateKey:                  cert.PrivateKey,
-		OCSPStaple:                  cert.OCSPStaple,
-		SignedCertificateTimestamps: cert.SignedCertificateTimestamps,
-		Leaf:                        cert.Leaf,
-	}
-	for i := 0; i < len(cert.SupportedSignatureAlgorithms); i++ {
-		scheme := utls.SignatureScheme(cert.SupportedSignatureAlgorithms[i])
-		crt.SupportedSignatureAlgorithms[i] = scheme
-	}
-	return crt
 }
