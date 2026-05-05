@@ -17,6 +17,7 @@ import (
 	"github.com/For-ACGN/autocert"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/net/http2"
 	"golang.org/x/net/netutil"
 )
 
@@ -145,28 +146,28 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	serverMux.HandleFunc(fmt.Sprintf("/%s/logout", pathHash), server.handleLogout)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/ping", pathHash), server.handlePing)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/connect", pathHash), server.handleConnect)
-	// explicitly enable HTTP/1.1 and HTTP/2
-	http1 := &http.Server{
+	// explicitly enable HTTP/1.1 only for covert usage
+	h1Server := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
 		IdleTimeout:       timeout,
 	}
-	http1.Protocols = new(http.Protocols)
-	http1.Protocols.SetHTTP1(true)
-	http1.Protocols.SetHTTP2(true)
-	http1.Protocols.SetUnencryptedHTTP2(true)
-	// explicitly enable HTTP/2 only
-	http2 := &http.Server{
+	h1Server.Protocols = new(http.Protocols)
+	h1Server.Protocols.SetHTTP1(true)
+	h1Server.Protocols.SetHTTP2(false)
+	h1Server.Protocols.SetUnencryptedHTTP2(false)
+	// explicitly enable HTTP/1.1 and HTTP/2 for common usage
+	h2Server := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
 		IdleTimeout:       timeout,
 	}
-	http2.Protocols = new(http.Protocols)
-	http2.Protocols.SetHTTP1(false)
-	http2.Protocols.SetHTTP2(true)
-	http2.Protocols.SetUnencryptedHTTP2(false)
-	server.http1 = http1
-	server.http2 = http2
+	h2Server.Protocols = new(http.Protocols)
+	h2Server.Protocols.SetHTTP1(true)
+	h2Server.Protocols.SetHTTP2(true)
+	h2Server.Protocols.SetUnencryptedHTTP2(false)
+	server.http1 = h1Server
+	server.http2 = h2Server
 	return &server, nil
 }
 
@@ -374,55 +375,52 @@ func (s *Server) Serve() error {
 	maxDelay := time.Second
 	for {
 		conn, err := s.listener.Accept()
-		if err != nil {
-			if s.shuttingDown() {
-				return nil
-			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if tempDelay == 0 {
-					tempDelay = 5 * time.Millisecond
-				} else {
-					tempDelay *= 2
-				}
-				if tempDelay > maxDelay {
-					tempDelay = maxDelay
-				}
-				s.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
-				time.Sleep(tempDelay)
-				continue
-			}
-			return err
+		if err == nil {
+			go s.handleConn(conn)
+			continue
 		}
-		go s.handleConn(conn)
+		if s.shuttingDown() {
+			return nil
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if tempDelay == 0 {
+				tempDelay = 5 * time.Millisecond
+			} else {
+				tempDelay *= 2
+			}
+			if tempDelay > maxDelay {
+				tempDelay = maxDelay
+			}
+			s.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
+			time.Sleep(tempDelay)
+			continue
+		}
+		return err
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	uc := conn.(*utlsConn)
-	err := uc.Handshake()
+	uConn := conn.(*utlsConn)
+	err := uConn.Handshake()
 	if err != nil {
-		s.logger.Warningf("failed to handshake from %s: %s", uc.RemoteAddr(), err)
+		s.logger.Warningf("failed to handshake from %s: %s", uConn.RemoteAddr(), err)
 		return
 	}
-
-	// cfg := s.cfg.Clone()
-	// cfg.NextProtos = tlsNextProtos
-	// conn = tls.Server(uc.NetConn(), cfg)
-
-	ol := newOnceListener(conn)
-	if uc.covert {
-
+	ol := newOnceListener(uConn)
+	if uConn.covert {
 		_ = s.http1.Serve(ol)
-	} else {
-
-		// srv := http2.Server{}
-		// opts := http2.ServeConnOpts{
-		// 	BaseConfig: s.http2,
-		// }
-		// srv.ServeConn(conn, &opts)
-
-		_ = s.http2.Serve(ol)
+		return
 	}
+	proto := uConn.ConnectionState().NegotiatedProtocol
+	if proto == "h2" {
+		srv := http2.Server{}
+		opts := http2.ServeConnOpts{
+			BaseConfig: s.http2,
+		}
+		srv.ServeConn(uConn, &opts)
+		return
+	}
+	_ = s.http2.Serve(ol)
 }
 
 // Close is used to close http server.
