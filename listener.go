@@ -36,7 +36,8 @@ func newUTLSListener(listener net.Listener, config *tls.Config, secret []byte) *
 		cfg.GetCertificate = wrapper
 	}
 	if len(config.Certificates) > 0 {
-		cfg.Certificates[0] = *utls.ToUTLSCertificate(&config.Certificates[0])
+		cert := *utls.ToUTLSCertificate(&config.Certificates[0])
+		cfg.Certificates = []utls.Certificate{cert}
 	}
 	cfg.NextProtos = tlsNextProtos
 	return &utlsListener{
@@ -129,7 +130,7 @@ func (ol *onceListener) Addr() net.Addr {
 }
 
 func (ol *onceListener) Close() error {
-	return ol.conn.Close()
+	return nil
 }
 
 // check the prefix 17 bits are all zero.
