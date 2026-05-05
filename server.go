@@ -165,7 +165,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	h2Server.Protocols = new(http.Protocols)
 	h2Server.Protocols.SetHTTP1(true)
 	h2Server.Protocols.SetHTTP2(true)
-	h2Server.Protocols.SetUnencryptedHTTP2(false)
+	h2Server.Protocols.SetUnencryptedHTTP2(true)
 	server.http1 = h1Server
 	server.http2 = h2Server
 	return &server, nil
