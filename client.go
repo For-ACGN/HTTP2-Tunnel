@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
@@ -240,26 +241,27 @@ func (c *Client) Serve() error {
 	maxDelay := time.Second
 	for {
 		conn, err := c.frontListener.Accept()
-		if err != nil {
-			if c.shuttingDown() {
-				return nil
-			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if tempDelay == 0 {
-					tempDelay = 5 * time.Millisecond
-				} else {
-					tempDelay *= 2
-				}
-				if tempDelay > maxDelay {
-					tempDelay = maxDelay
-				}
-				c.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
-				time.Sleep(tempDelay)
-				continue
-			}
-			return err
+		if err == nil {
+			go c.handleConn(conn)
+			continue
 		}
-		go c.handleConn(conn)
+		if c.shuttingDown() {
+			return nil
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if tempDelay == 0 {
+				tempDelay = 5 * time.Millisecond
+			} else {
+				tempDelay *= 2
+			}
+			if tempDelay > maxDelay {
+				tempDelay = maxDelay
+			}
+			c.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
+			time.Sleep(tempDelay)
+			continue
+		}
+		return err
 	}
 }
 
@@ -544,12 +546,22 @@ func (c *Client) dial() (net.Conn, error) {
 		colonPos = len(c.serverAddr)
 	}
 	serverName := c.serverAddr[:colonPos]
-	tlsConfig := &utls.Config{
+	// tlsConfig := &utls.Config{
+	// 	ServerName: serverName,
+	// 	RootCAs:    c.tlsConfig.RootCAs,
+	// 	NextProtos: tlsNextProtos,
+	// }
+	uc := tls.Client(conn, &tls.Config{
 		ServerName: serverName,
 		RootCAs:    c.tlsConfig.RootCAs,
 		NextProtos: tlsNextProtos,
-	}
-	return utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto), nil
+	})
+	//  uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
+
+	uc.Handshake()
+	fmt.Println(uc.ConnectionState().NegotiatedProtocol)
+
+	return uc, nil
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
