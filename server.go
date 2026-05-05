@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/For-ACGN/autocert"
@@ -39,6 +40,7 @@ type Server struct {
 	maxBufSize int
 
 	acl *autocert.Listener
+	cfg *tls.Config
 	dir string
 	hfs http.Handler
 
@@ -46,6 +48,8 @@ type Server struct {
 
 	http1 *http.Server
 	http2 *http.Server
+
+	inShutdown atomic.Bool
 }
 
 // NewServer is used to create a SoH server.
@@ -129,6 +133,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		maxBufSize: maxBufSize,
 
 		acl: acl,
+		cfg: cfg,
 		dir: webDir,
 		hfs: http.FileServer(http.Dir(webDir)),
 
@@ -358,18 +363,71 @@ func (s *Server) negotiate(r *http.Request) ([]byte, []byte, error) {
 	return sessionKey, serverPub, nil
 }
 
+func (s *Server) shuttingDown() bool {
+	return s.inShutdown.Load()
+}
+
 // Serve is used to start http server.
 func (s *Server) Serve() error {
 	s.logger.Infof("server listening on %s", s.listener.Addr())
-	err := s.server.Serve(s.listener)
-	if errors.Is(err, http.ErrServerClosed) {
-		err = nil
+	var tempDelay time.Duration
+	maxDelay := time.Second
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if s.shuttingDown() {
+				return nil
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if tempDelay > maxDelay {
+					tempDelay = maxDelay
+				}
+				s.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
+				time.Sleep(tempDelay)
+				continue
+			}
+			return err
+		}
+		go s.handleConn(conn)
 	}
-	return err
+}
+
+func (s *Server) handleConn(conn net.Conn) {
+	uc := conn.(*utlsConn)
+	err := uc.Handshake()
+	if err != nil {
+		s.logger.Warningf("failed to handshake from %s: %s", uc.RemoteAddr(), err)
+		return
+	}
+
+	// cfg := s.cfg.Clone()
+	// cfg.NextProtos = tlsNextProtos
+	// conn = tls.Server(uc.NetConn(), cfg)
+
+	ol := newOnceListener(conn)
+	if uc.covert {
+
+		_ = s.http1.Serve(ol)
+	} else {
+
+		// srv := http2.Server{}
+		// opts := http2.ServeConnOpts{
+		// 	BaseConfig: s.http2,
+		// }
+		// srv.ServeConn(conn, &opts)
+
+		_ = s.http2.Serve(ol)
+	}
 }
 
 // Close is used to close http server.
 func (s *Server) Close() error {
+	s.inShutdown.Store(true)
 	if s.acl != nil {
 		_ = s.acl.Close()
 	} else {
