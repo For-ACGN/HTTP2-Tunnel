@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -30,30 +31,63 @@ func TestHTTPServerSimulation(t *testing.T) {
 	tlsConfig := &tls.Config{}
 	tlsConfig.RootCAs = x509.NewCertPool()
 	tlsConfig.RootCAs.AddCert(certs[0])
-	tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 
-	for i := 0; i < 20; i++ {
-		conn, err := tls.Dial("tcp", server.Addr, tlsConfig)
-		require.NoError(t, err)
+	t.Run("http/1.1", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			tlsConfig = tlsConfig.Clone()
+			tlsConfig.NextProtos = []string{"http/1.1"}
 
-		err = conn.Handshake()
-		require.NoError(t, err)
-		proto := conn.ConnectionState().NegotiatedProtocol
-		require.Equal(t, "h2", proto)
+			conn, err := tls.Dial("tcp", server.Addr, tlsConfig)
+			require.NoError(t, err)
 
-		req, err := http.NewRequest(http.MethodGet, "/", nil)
-		require.NoError(t, err)
-		err = req.Write(conn)
-		require.NoError(t, err)
-		resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-		t.Log(err)
-		require.Nil(t, resp)
+			err = conn.Handshake()
+			require.NoError(t, err)
+			proto := conn.ConnectionState().NegotiatedProtocol
+			require.Equal(t, "http/1.1", proto)
 
-		err = conn.Close()
-		require.NoError(t, err)
+			req, err := http.NewRequest(http.MethodGet, "/", nil)
+			require.NoError(t, err)
+			err = req.Write(conn)
+			require.NoError(t, err)
+			resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+			require.NoError(t, err)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 
-		time.Sleep(100 * time.Millisecond)
-	}
+			err = conn.Close()
+			require.NoError(t, err)
+
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("http/2", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			tlsConfig = tlsConfig.Clone()
+			tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+
+			conn, err := tls.Dial("tcp", server.Addr, tlsConfig)
+			require.NoError(t, err)
+
+			err = conn.Handshake()
+			require.NoError(t, err)
+			proto := conn.ConnectionState().NegotiatedProtocol
+			require.Equal(t, "h2", proto)
+
+			req, err := http.NewRequest(http.MethodGet, "/", nil)
+			require.NoError(t, err)
+			err = req.Write(conn)
+			require.NoError(t, err)
+			resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+			t.Log(err)
+			require.Nil(t, resp)
+
+			err = conn.Close()
+			require.NoError(t, err)
+
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 
 	err = server.Close()
 	require.NoError(t, err)
