@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
@@ -35,6 +34,7 @@ const (
 type Client struct {
 	logger *logger
 
+	secret     []byte
 	passHash   string
 	pathHash   string
 	timeout    time.Duration
@@ -51,6 +51,7 @@ type Client struct {
 	frontPassword string
 	frontListener net.Listener
 
+	randCh chan []byte
 	connCh chan net.Conn
 
 	numConns  int64
@@ -72,7 +73,8 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		return nil, errors.Wrap(err, "failed to open log file")
 	}
 	h := sha256.Sum256([]byte(config.Common.Password))
-	passHash := hex.EncodeToString(h[:])
+	secret := h[:]
+	passHash := hex.EncodeToString(secret)
 	pathHash := passHash[:8] + passHash[32:32+8]
 	timeout := time.Duration(config.Client.Timeout)
 	if timeout < time.Second {
@@ -122,6 +124,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	client := Client{
 		logger: logger,
 
+		secret:     secret,
 		passHash:   passHash,
 		pathHash:   pathHash,
 		timeout:    timeout,
@@ -138,6 +141,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		frontPassword: config.Front.Password,
 		frontListener: listener,
 
+		randCh: make(chan []byte, 128+preConns),
 		connCh: connCh,
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
@@ -231,6 +235,10 @@ func (c *Client) shuttingDown() bool {
 
 // Serve is used to start front server.
 func (c *Client) Serve() error {
+	// start secret random generator
+	c.wg.Add(1)
+	go c.generator()
+	// start pre-connection connector
 	num := 2 + newMathRand().Intn(4)
 	for i := 0; i < num; i++ {
 		c.wg.Add(1)
@@ -451,6 +459,33 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 	return tun, nil
 }
 
+func (c *Client) generator() {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Fatal("generator", r)
+		}
+		c.wg.Done()
+	}()
+	rd := newMathRand()
+	buf := make([]byte, 32)
+	hash := sha256.New()
+	for {
+		rd.Read(buf)
+		hash.Reset()
+		hash.Write(buf)
+		hash.Write(c.secret)
+		digest := hash.Sum(nil)
+		if !isCovertDigest(digest) {
+			continue
+		}
+		select {
+		case c.randCh <- digest:
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
 func (c *Client) connector() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -546,20 +581,12 @@ func (c *Client) dial() (net.Conn, error) {
 		colonPos = len(c.serverAddr)
 	}
 	serverName := c.serverAddr[:colonPos]
-	// tlsConfig := &utls.Config{
-	// 	ServerName: serverName,
-	// 	RootCAs:    c.tlsConfig.RootCAs,
-	// 	NextProtos: tlsNextProtos,
-	// }
-	uc := tls.Client(conn, &tls.Config{
+	tlsConfig := &utls.Config{
 		ServerName: serverName,
 		RootCAs:    c.tlsConfig.RootCAs,
 		NextProtos: tlsNextProtos,
-	})
-	//  uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
-
-	uc.Handshake()
-	fmt.Println(uc.ConnectionState().NegotiatedProtocol)
+	}
+	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
 
 	return uc, nil
 }
