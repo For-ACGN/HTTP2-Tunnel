@@ -2,6 +2,7 @@ package msocks
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -114,7 +115,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to listen for the front server")
 	}
-	// build pre connection channel
+	// build pre-connection channel
 	var connCh chan net.Conn
 	if preConns != 0 {
 		connCh = make(chan net.Conn, preConns)
@@ -145,6 +146,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		connCh: connCh,
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
+	// start secret random generator
+	client.wg.Add(1)
+	go client.generator()
 	return &client, nil
 }
 
@@ -235,9 +239,6 @@ func (c *Client) shuttingDown() bool {
 
 // Serve is used to start front server.
 func (c *Client) Serve() error {
-	// start secret random generator
-	c.wg.Add(1)
-	go c.generator()
 	// start pre-connection connector
 	num := 2 + newMathRand().Intn(4)
 	for i := 0; i < num; i++ {
@@ -459,6 +460,20 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 	return tun, nil
 }
 
+func (c *Client) getPreConn() (net.Conn, error) {
+	// try to get connection from preconnect channel
+	select {
+	case conn := <-c.connCh:
+		return conn, nil
+	case <-c.ctx.Done():
+		return nil, c.ctx.Err()
+	default:
+	}
+	// if channel is empty(A large number of connections
+	// were used in a short period of time), connect at once
+	return c.preconnect()
+}
+
 func (c *Client) generator() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -474,12 +489,13 @@ func (c *Client) generator() {
 		hash.Reset()
 		hash.Write(buf)
 		hash.Write(c.secret)
-		digest := hash.Sum(nil)
-		if !isCovertDigest(digest) {
+		if !isCovertDigest(hash.Sum(nil)) {
 			continue
 		}
+		random := bytes.Clone(buf)
+
 		select {
-		case c.randCh <- digest:
+		case c.randCh <- random:
 		case <-c.ctx.Done():
 			return
 		}
@@ -540,18 +556,36 @@ func (c *Client) connector() {
 	}
 }
 
-func (c *Client) getPreConn() (net.Conn, error) {
-	// try to get connection from preconnect channel
-	select {
-	case conn := <-c.connCh:
-		return conn, nil
-	case <-c.ctx.Done():
-		return nil, c.ctx.Err()
-	default:
+func (c *Client) dial() (net.Conn, error) {
+	dialer := c.buildDialer()
+	conn, err := dialer.DialContext(c.ctx, c.serverNet, c.serverAddr)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to connect to server")
 	}
-	// if channel is empty(A large number of connections
-	// were used in a short period of time), connect at once
-	return c.preconnect()
+	colonPos := strings.LastIndex(c.serverAddr, ":")
+	if colonPos == -1 {
+		colonPos = len(c.serverAddr)
+	}
+	serverName := c.serverAddr[:colonPos]
+	tlsConfig := &utls.Config{
+		ServerName: serverName,
+		RootCAs:    c.tlsConfig.RootCAs,
+		NextProtos: tlsNextProtos,
+		Random:     <-c.randCh,
+	}
+
+	fmt.Println(tlsConfig.Random)
+
+	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
+	err = uc.Handshake()
+	if err != nil {
+		return nil, err
+	}
+
+	if uc.ConnectionState().NegotiatedProtocol != "h2" {
+		return nil, errors.New("invalid negotiated protocol")
+	}
+	return uc, nil
 }
 
 func (c *Client) buildDialer() *net.Dialer {
@@ -568,27 +602,6 @@ func (c *Client) buildDialer() *net.Dialer {
 		},
 	}
 	return &net.Dialer{Resolver: resolver, Timeout: c.timeout}
-}
-
-func (c *Client) dial() (net.Conn, error) {
-	dialer := c.buildDialer()
-	conn, err := dialer.DialContext(c.ctx, c.serverNet, c.serverAddr)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to server")
-	}
-	colonPos := strings.LastIndex(c.serverAddr, ":")
-	if colonPos == -1 {
-		colonPos = len(c.serverAddr)
-	}
-	serverName := c.serverAddr[:colonPos]
-	tlsConfig := &utls.Config{
-		ServerName: serverName,
-		RootCAs:    c.tlsConfig.RootCAs,
-		NextProtos: tlsNextProtos,
-	}
-	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
-
-	return uc, nil
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
