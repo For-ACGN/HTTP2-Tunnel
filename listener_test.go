@@ -4,26 +4,26 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
 	"testing"
-	"time"
 )
 
 func TestCovertDigest(t *testing.T) {
-	rd := rand.New(rand.NewSource(time.Now().Unix()))
+	secret := []byte("secret")
+
+	rand := newMathRand()
 	buf := make([]byte, 32)
-	h := sha256.New()
+	hash := sha256.New()
 	var num int
 	for i := 0; i < 10000000; i++ {
-		rd.Read(buf)
-		h.Write(buf)
-		h.Write(buf)
-		digest := h.Sum(nil)
+		rand.Read(buf)
+		hash.Write(buf)
+		hash.Write(secret)
+		digest := hash.Sum(nil)
 		if isCovertDigest(digest) {
 			fmt.Println(hex.EncodeToString(digest))
 			num++
 		}
-		h.Reset()
+		hash.Reset()
 	}
 	fmt.Println("num:", num)
 }
