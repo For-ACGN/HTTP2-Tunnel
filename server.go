@@ -147,27 +147,27 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	serverMux.HandleFunc(fmt.Sprintf("/%s/ping", pathHash), server.handlePing)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/connect", pathHash), server.handleConnect)
 	// explicitly enable HTTP/1.1 only for covert usage
-	h1Server := &http.Server{
+	http1Srv := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
 		IdleTimeout:       timeout,
 	}
-	h1Server.Protocols = new(http.Protocols)
-	h1Server.Protocols.SetHTTP1(true)
-	h1Server.Protocols.SetHTTP2(false)
-	h1Server.Protocols.SetUnencryptedHTTP2(false)
+	http1Srv.Protocols = new(http.Protocols)
+	http1Srv.Protocols.SetHTTP1(true)
+	http1Srv.Protocols.SetHTTP2(false)
+	http1Srv.Protocols.SetUnencryptedHTTP2(false)
 	// explicitly enable HTTP/1.1 and HTTP/2 for common usage
-	h2Server := &http.Server{
+	http2Srv := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
 		IdleTimeout:       timeout,
 	}
-	h2Server.Protocols = new(http.Protocols)
-	h2Server.Protocols.SetHTTP1(true)
-	h2Server.Protocols.SetHTTP2(true)
-	h2Server.Protocols.SetUnencryptedHTTP2(true)
-	server.http1 = h1Server
-	server.http2 = h2Server
+	http2Srv.Protocols = new(http.Protocols)
+	http2Srv.Protocols.SetHTTP1(true)
+	http2Srv.Protocols.SetHTTP2(true)
+	http2Srv.Protocols.SetUnencryptedHTTP2(true)
+	server.http1 = http1Srv
+	server.http2 = http2Srv
 	return &server, nil
 }
 
