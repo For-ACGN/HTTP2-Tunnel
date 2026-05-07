@@ -493,7 +493,6 @@ func (c *Client) generator() {
 			continue
 		}
 		random := bytes.Clone(buf)
-
 		select {
 		case c.randCh <- random:
 		case <-c.ctx.Done():
@@ -526,11 +525,11 @@ func (c *Client) connector() {
 		case 0, 1, 2:
 			delay = 0 * time.Second
 		case 3, 4:
-			delay = time.Duration(20+mRand.Intn(300)) * time.Millisecond
+			delay = time.Duration(200+mRand.Intn(4000)) * time.Millisecond
 		case 5, 6:
-			delay = time.Duration(80+mRand.Intn(900)) * time.Millisecond
+			delay = time.Duration(800+mRand.Intn(9000)) * time.Millisecond
 		default:
-			delay = time.Duration(10+mRand.Intn(250)) * time.Millisecond
+			delay = time.Duration(100+mRand.Intn(2000)) * time.Millisecond
 		}
 		// preconnect
 		select {
@@ -589,14 +588,22 @@ func (c *Client) dial() (net.Conn, error) {
 		NextProtos: tlsNextProtos,
 	}
 	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
+	// set secret random value
 	err = uc.BuildHandshakeState()
 	if err != nil {
 		return nil, err
 	}
-	err = uc.SetClientRandom(<-c.randCh)
+	var random []byte
+	select {
+	case random = <-c.randCh:
+	case <-c.ctx.Done():
+		return nil, c.ctx.Err()
+	}
+	err = uc.SetClientRandom(random)
 	if err != nil {
 		return nil, err
 	}
+	// check the negotiated protocol
 	err = uc.Handshake()
 	if err != nil {
 		return nil, err
