@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultPreConns      = 32
+	defaultPreConns      = 16
 	defaultClientTimeout = 10 * time.Second
 )
 
@@ -173,7 +173,7 @@ func (c *Client) Login() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to create request for login")
 	}
-	garbage := make([]byte, 128+newMathRand().Intn(4*1024))
+	garbage := make([]byte, 4096+newMathRand().Intn(16*1024))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
@@ -212,7 +212,7 @@ func (c *Client) Logout() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to create request for logout")
 	}
-	garbage := make([]byte, 128+newMathRand().Intn(4*1024))
+	garbage := make([]byte, 4096+newMathRand().Intn(16*1024))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
@@ -355,8 +355,8 @@ func (c *Client) handleConn(conn net.Conn) {
 
 		lg.Infof(
 			"{%s} <%s> disconnect %s (%s/%s)", tun.Protocol, tun.IPType, tun.Address,
-			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""),
-			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""),
+			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
+			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
 		)
 
 		// update status
@@ -406,7 +406,7 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create request for connect")
 	}
-	garbage := make([]byte, 256+newMathRand().Intn(2*1024))
+	garbage := make([]byte, 256+newMathRand().Intn(4*1024))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Public-Key", hex.EncodeToString(clientPub))
@@ -485,7 +485,7 @@ func (c *Client) generator() {
 	buf := make([]byte, 32)
 	hash := sha256.New()
 	for {
-		rd.Read(buf)
+		_, _ = rd.Read(buf)
 		hash.Reset()
 		hash.Write(buf)
 		hash.Write(c.secret)
@@ -556,6 +556,22 @@ func (c *Client) connector() {
 	}
 }
 
+func (c *Client) buildDialer() *net.Dialer {
+	if runtime.GOOS != "android" {
+		return new(net.Dialer)
+	}
+	dialer := net.Dialer{
+		Timeout: 3 * time.Second,
+	}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, c.dnsServer)
+		},
+	}
+	return &net.Dialer{Resolver: resolver, Timeout: c.timeout}
+}
+
 func (c *Client) dial() (net.Conn, error) {
 	dialer := c.buildDialer()
 	conn, err := dialer.DialContext(c.ctx, c.serverNet, c.serverAddr)
@@ -591,22 +607,6 @@ func (c *Client) dial() (net.Conn, error) {
 	return uc, nil
 }
 
-func (c *Client) buildDialer() *net.Dialer {
-	if runtime.GOOS != "android" {
-		return new(net.Dialer)
-	}
-	dialer := net.Dialer{
-		Timeout: 3 * time.Second,
-	}
-	resolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, c.dnsServer)
-		},
-	}
-	return &net.Dialer{Resolver: resolver, Timeout: c.timeout}
-}
-
 func (c *Client) preconnect() (net.Conn, error) {
 	conn, err := c.dial()
 	if err != nil {
@@ -624,7 +624,7 @@ func (c *Client) preconnect() (net.Conn, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create request for preconnect")
 	}
-	garbage := make([]byte, 512+newMathRand().Intn(2*1024))
+	garbage := make([]byte, 512+newMathRand().Intn(4*1024))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
@@ -657,8 +657,8 @@ func (c *Client) Close() error {
 	c.inShutdown.Store(true)
 	c.logger.Infof(
 		"total connection: %d, total traffic: (%s/%s)", c.numConns,
-		strings.ReplaceAll(humanize.IBytes(uint64(c.numSend)), "i", ""),
-		strings.ReplaceAll(humanize.IBytes(uint64(c.numRecv)), "i", ""),
+		strings.ReplaceAll(humanize.IBytes(uint64(c.numSend)), "i", ""), // #nosec G115
+		strings.ReplaceAll(humanize.IBytes(uint64(c.numRecv)), "i", ""), // #nosec G115
 	)
 	c.logger.Info("close connectors")
 	c.cancel()
