@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"testing"
 	"time"
 
@@ -20,6 +22,10 @@ func init() {
 	h := sha256.Sum256([]byte(testPassword))
 	testPassHash = hex.EncodeToString(h[:])
 	fmt.Println("pass hash:", testPassHash)
+	// start pprof server
+	go func() {
+		_ = http.ListenAndServe("localhost:1234", nil)
+	}()
 }
 
 type testDuration struct {
