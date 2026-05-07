@@ -266,7 +266,7 @@ func (c *Client) Serve() error {
 			if tempDelay > maxDelay {
 				tempDelay = maxDelay
 			}
-			c.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
+			c.logger.Warningf("accept error: %s; retrying in %v", err, tempDelay)
 			time.Sleep(tempDelay)
 			continue
 		}
@@ -571,17 +571,20 @@ func (c *Client) dial() (net.Conn, error) {
 		ServerName: serverName,
 		RootCAs:    c.tlsConfig.RootCAs,
 		NextProtos: tlsNextProtos,
-		Random:     <-c.randCh,
 	}
-
-	fmt.Println(tlsConfig.Random)
-
 	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
+	err = uc.BuildHandshakeState()
+	if err != nil {
+		return nil, err
+	}
+	err = uc.SetClientRandom(<-c.randCh)
+	if err != nil {
+		return nil, err
+	}
 	err = uc.Handshake()
 	if err != nil {
 		return nil, err
 	}
-
 	if uc.ConnectionState().NegotiatedProtocol != "h2" {
 		return nil, errors.New("invalid negotiated protocol")
 	}
