@@ -1,9 +1,11 @@
 package msocks
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
@@ -37,6 +39,7 @@ type Server struct {
 	logger *logger
 
 	passHash   string
+	preface    []byte
 	timeout    time.Duration
 	maxBufSize int
 
@@ -66,11 +69,12 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	if len(passHash) != 64 {
 		return nil, errors.New("invalid password hash length")
 	}
-	phBin, err := hex.DecodeString(passHash)
+	hashBin, err := hex.DecodeString(passHash)
 	if err != nil {
 		return nil, errors.Wrap(err, "invalid password hash format")
 	}
 	pathHash := passHash[:8] + passHash[32:32+8]
+	preface := hashBin[:len(http2.ClientPreface)]
 	timeout := time.Duration(config.HTTP.Timeout)
 	if timeout < time.Second {
 		timeout = defaultServerTimeout
@@ -124,12 +128,13 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	default:
 		return nil, fmt.Errorf("unknown TLS mode: %s", config.TLS.Mode)
 	}
-	listener = newUTLSListener(listener, cfg, phBin)
+	listener = newUTLSListener(listener, cfg, hashBin)
 	// create http servers
 	server := Server{
 		logger: logger,
 
 		passHash:   passHash,
+		preface:    preface,
 		timeout:    timeout,
 		maxBufSize: maxBufSize,
 
@@ -141,7 +146,6 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		listener: listener,
 	}
 	serverMux := http.NewServeMux()
-	serverMux.HandleFunc("/", server.handleIndex)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/login", pathHash), server.handleLogin)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/logout", pathHash), server.handleLogout)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/ping", pathHash), server.handlePing)
@@ -157,6 +161,8 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	http1Srv.Protocols.SetHTTP2(false)
 	http1Srv.Protocols.SetUnencryptedHTTP2(false)
 	// explicitly enable HTTP/1.1 and HTTP/2 for common usage
+	serverMux = http.NewServeMux()
+	serverMux.HandleFunc("/", server.handleIndex)
 	http2Srv := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
@@ -391,7 +397,7 @@ func (s *Server) Serve() error {
 			if tempDelay > maxDelay {
 				tempDelay = maxDelay
 			}
-			s.logger.Warningf("http: Accept error: %s; retrying in %v", err, tempDelay)
+			s.logger.Warningf("accept error: %s; retrying in %v", err, tempDelay)
 			time.Sleep(tempDelay)
 			continue
 		}
@@ -400,27 +406,58 @@ func (s *Server) Serve() error {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
+	var success bool
+	defer func() {
+		if !success {
+			_ = conn.Close()
+		}
+	}()
 	uConn := conn.(*utlsConn)
 	err := uConn.Handshake()
 	if err != nil {
-		s.logger.Warningf("failed to handshake from %s: %s", uConn.RemoteAddr(), err)
-		return
-	}
-	ol := newOnceListener(uConn)
-	if uConn.covert {
-		_ = s.http1.Serve(ol)
+		format := "failed to handshake from %s: %s"
+		s.logger.Warningf(format, uConn.RemoteAddr(), err)
 		return
 	}
 	proto := uConn.ConnectionState().NegotiatedProtocol
-	if proto == "h2" {
-		srv := http2.Server{}
-		opts := http2.ServeConnOpts{
-			BaseConfig: s.http2,
-		}
-		srv.ServeConn(uConn, &opts)
+	if proto != "h2" {
+		ol := newOnceListener(uConn)
+		_ = s.http2.Serve(ol)
 		return
 	}
-	_ = s.http2.Serve(ol)
+	if !uConn.covert {
+		s.serveHTTP2(uConn)
+		return
+	}
+	reader := bufio.NewReader(uConn)
+	preface, err := reader.Peek(len(http2.ClientPreface))
+	if err != nil {
+		format := "failed to read secret preface from %s: %s"
+		s.logger.Warningf(format, uConn.RemoteAddr(), err)
+		return
+	}
+	bConn := newBufConn(uConn, reader)
+	if subtle.ConstantTimeCompare(s.preface, preface) != 1 {
+		format := "invalid secret preface from %s"
+		s.logger.Warningf(format, uConn.RemoteAddr())
+		s.serveHTTP2(bConn)
+		return
+	}
+	err = simulateHTTP2Server(bConn)
+	if err != nil {
+		return
+	}
+	success = true
+	ol := newOnceListener(bConn)
+	_ = s.http1.Serve(ol)
+}
+
+func (s *Server) serveHTTP2(conn net.Conn) {
+	srv := http2.Server{}
+	opts := http2.ServeConnOpts{
+		BaseConfig: s.http2,
+	}
+	srv.ServeConn(conn, &opts)
 }
 
 // Close is used to close http server.
