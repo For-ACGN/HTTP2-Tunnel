@@ -11,7 +11,9 @@ import (
 
 const (
 	settingFrameSize = 46
-	windowsUpdate    = 19
+	srvPacket1       = 39 // TODO adjust ?
+	srvPacket2       = 22 // TODO adjust ?
+	cliPacket1       = 9  // TODO adjust ?
 )
 
 func simulateHTTP2Client(conn net.Conn, preface []byte) error {
@@ -42,6 +44,17 @@ func simulateHTTP2Client(conn net.Conn, preface []byte) error {
 		return err
 	}
 
+	// discard server packet 1 and 2
+	_, err = io.CopyN(io.Discard, conn, int64(srvPacket1+srvPacket2))
+	if err != nil {
+		return err
+	}
+
+	// send client packet 1
+	_, err = conn.Write(bytes.Repeat([]byte{0x00}, cliPacket1))
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -67,5 +80,20 @@ func simulateHTTP2Server(conn net.Conn) error {
 		return err
 	}
 
+	// send server packet 1 and 2
+	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvPacket1))
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvPacket2))
+	if err != nil {
+		return err
+	}
+
+	// discard client packet 1
+	_, err = io.CopyN(io.Discard, conn, int64(cliPacket1))
+	if err != nil {
+		return err
+	}
 	return nil
 }
