@@ -40,11 +40,12 @@ func newUTLSListener(listener net.Listener, config *tls.Config, secret []byte) *
 		cfg.Certificates = []utls.Certificate{cert}
 	}
 	cfg.NextProtos = tlsNextProtos
-	return &utlsListener{
+	ul := utlsListener{
 		Listener: listener,
 		config:   cfg,
 		secret:   secret,
 	}
+	return &ul
 }
 
 func (ul *utlsListener) Accept() (net.Conn, error) {
@@ -71,37 +72,6 @@ type utlsConn struct {
 	*utls.Conn
 
 	covert bool
-
-	rmu sync.Mutex
-	wmu sync.Mutex
-}
-
-func (uc *utlsConn) Read(b []byte) (int, error) {
-	err := uc.Conn.Handshake()
-	if err != nil {
-		return 0, err
-	}
-	uc.rmu.Lock()
-	defer uc.rmu.Unlock()
-	if uc.covert {
-		// TODO simulate http2 behavior
-		uc.covert = false
-	}
-	return uc.Conn.Read(b)
-}
-
-func (uc *utlsConn) Write(b []byte) (int, error) {
-	err := uc.Conn.Handshake()
-	if err != nil {
-		return 0, err
-	}
-	uc.wmu.Lock()
-	defer uc.wmu.Unlock()
-	if uc.covert {
-		// TODO simulate http2 behavior
-		uc.covert = false
-	}
-	return uc.Conn.Write(b)
 }
 
 // for select the http1 or http2 server.
