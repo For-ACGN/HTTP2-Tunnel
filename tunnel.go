@@ -21,8 +21,8 @@ const (
 )
 
 var (
-	tlsClientHello = []byte{0x16, 0x03, 0x01}
-	tlsNextALPN    = []byte("\x02h2\x08http/1.1")
+	tlsClientHelloPrefix   = []byte{0x16, 0x03, 0x01}
+	tlsClientHelloNextALPN = []byte("\x02h2\x08http/1.1")
 )
 
 type tunnel struct {
@@ -50,15 +50,18 @@ type tunnel struct {
 
 	// about special control
 	sniffed bool
+	isTLS   bool
 	isHTTPS bool
 
+	rmu sync.Mutex
+	wmu sync.Mutex
+	smu sync.Mutex
+
 	// context data
-	Elapsed  time.Duration
 	Protocol string
 	IPType   string
 	Address  string
-
-	mu sync.Mutex
+	Elapsed  time.Duration
 }
 
 func newClientTunnel(conn net.Conn, key []byte, jitter int) (*tunnel, error) {
@@ -177,11 +180,14 @@ func (t *tunnel) Read(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
+	t.rmu.Lock()
+	defer t.rmu.Unlock()
 	n, err := t.Conn.Read(b)
 	if err != nil {
 		return n, err
 	}
 	t.reader.XORKeyStream(b[:n], b[:n])
+	t.sniff(b)
 	return n, nil
 }
 
@@ -193,8 +199,8 @@ func (t *tunnel) Write(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
 	t.sniff(b)
 	// process write buffer
 	if len(t.writeBuf) < len(b) {
@@ -217,15 +223,21 @@ func (t *tunnel) Write(b []byte) (int, error) {
 }
 
 func (t *tunnel) sniff(b []byte) {
+	t.smu.Lock()
+	defer t.smu.Unlock()
 	if t.sniffed {
 		return
 	}
-	t.sniffed = true
-	if t.clientSide {
-		if bytes.Contains(b, tlsClientHello) && bytes.Contains(b, tlsNextALPN) {
+	switch {
+	case bytes.Contains(b, tlsClientHelloPrefix):
+		switch {
+		case bytes.Contains(b, tlsClientHelloNextALPN):
 			t.isHTTPS = true
+		default:
 		}
+	default:
 	}
+	t.sniffed = true
 }
 
 func (t *tunnel) writeSegment(b []byte) (int, error) {
@@ -238,7 +250,7 @@ func (t *tunnel) writeSegment(b []byte) (int, error) {
 	var numSegments int
 	switch {
 	case t.isHTTPS:
-		numSegments = 2 + t.mRand.Intn(1+t.jit*2)
+		numSegments = 3 + t.mRand.Intn(1+t.jit*2)
 	default:
 		numSegments = 2 + t.mRand.Intn(1+t.jit*(total/512))
 	}
