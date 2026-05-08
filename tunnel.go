@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -16,13 +17,13 @@ import (
 )
 
 const (
-	maxObfDataSize = 2048
+	maxObfDataSize = 512
 	minSegmentSize = 64
 )
 
 var (
-	tlsClientHelloPrefix   = []byte{0x16, 0x03, 0x01}
-	tlsClientHelloNextALPN = []byte("\x02h2\x08http/1.1")
+	tlsClientHelloPrefix = []byte{0x16, 0x03, 0x01}
+	tlsClientHelloHTTP   = []byte("\x02h2\x08http/1.1")
 )
 
 type tunnel struct {
@@ -51,6 +52,7 @@ type tunnel struct {
 	// about special control
 	sniffed bool
 	isTLS   bool
+	isHTTP  bool
 	isHTTPS bool
 
 	rmu sync.Mutex
@@ -228,16 +230,21 @@ func (t *tunnel) sniff(b []byte) {
 	if t.sniffed {
 		return
 	}
+	t.sniffed = true
 	switch {
-	case bytes.Contains(b, tlsClientHelloPrefix):
+	case bytes.HasPrefix(b, tlsClientHelloPrefix):
 		switch {
-		case bytes.Contains(b, tlsClientHelloNextALPN):
+		case bytes.Contains(b, tlsClientHelloHTTP):
 			t.isHTTPS = true
 		default:
+			t.isTLS = true
 		}
-	default:
+	case bytes.HasPrefix(b, []byte(http.MethodGet)),
+		bytes.HasPrefix(b, []byte(http.MethodPost)),
+		bytes.HasPrefix(b, []byte(http.MethodConnect)),
+		bytes.HasPrefix(b, []byte(http.MethodOptions)):
+		t.isHTTP = true
 	}
-	t.sniffed = true
 }
 
 func (t *tunnel) writeSegment(b []byte) (int, error) {
@@ -251,6 +258,10 @@ func (t *tunnel) writeSegment(b []byte) (int, error) {
 	switch {
 	case t.isHTTPS:
 		numSegments = 3 + t.mRand.Intn(1+t.jit*2)
+	case t.isHTTP:
+		numSegments = 3 + t.mRand.Intn(1+t.jit*8)
+	case t.isTLS:
+		numSegments = 2 + t.mRand.Intn(1+t.jit*(total/1024))
 	default:
 		numSegments = 2 + t.mRand.Intn(1+t.jit*(total/512))
 	}
