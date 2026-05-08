@@ -2,7 +2,6 @@ package msocks
 
 import (
 	"crypto/rand"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -81,7 +80,7 @@ func TestTunnelFuzz(t *testing.T) {
 
 	mRand := newMathRand()
 	testdata := make([]byte, 4096+mRand.Intn(64*1024))
-	fmt.Println("testdata size:", len(testdata))
+	t.Log("testdata size:", len(testdata))
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)

@@ -2,7 +2,6 @@ package msocks
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -151,8 +150,8 @@ func TestClient_Serve(t *testing.T) {
 	require.NoError(t, err)
 	data, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	fmt.Println(len(data))
-	fmt.Println(string(data))
+	t.Log(len(data))
+	t.Log(string(data))
 
 	err = client.Close()
 	require.NoError(t, err)
@@ -200,8 +199,8 @@ func TestClient_DisablePreConn(t *testing.T) {
 	require.NoError(t, err)
 	data, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	fmt.Println(len(data))
-	fmt.Println(string(data))
+	t.Log(len(data))
+	t.Log(string(data))
 
 	err = client.Close()
 	require.NoError(t, err)
@@ -248,8 +247,8 @@ func TestClient_connect(t *testing.T) {
 	require.NoError(t, err)
 	data, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	fmt.Println(len(data))
-	fmt.Println(string(data))
+	t.Log(len(data))
+	t.Log(string(data))
 
 	err = client.Close()
 	require.NoError(t, err)

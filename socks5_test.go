@@ -50,8 +50,8 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		require.NoError(t, err)
 		data, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		fmt.Println(len(data))
-		fmt.Println(string(data))
+		t.Log(len(data))
+		t.Log(string(data))
 
 		err = client.Close()
 		require.NoError(t, err)
@@ -150,8 +150,8 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		require.NoError(t, err)
 		data, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
-		fmt.Println(len(data))
-		fmt.Println(string(data))
+		t.Log(len(data))
+		t.Log(string(data))
 
 		err = client.Close()
 		require.NoError(t, err)
