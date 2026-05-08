@@ -5,12 +5,40 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestHTTP2Simulation(t *testing.T) {
+	client, server := net.Pipe()
+
+	go func() {
+		err := simulateHTTP2Server(server)
+		require.NoError(t, err)
+
+		_, err = server.Write([]byte{0x01, 0x02, 0x03, 0x04})
+		require.NoError(t, err)
+	}()
+
+	err := simulateHTTP2Client(client, nil)
+	require.NoError(t, err)
+
+	buf := make([]byte, 4)
+	_, err = io.ReadFull(client, buf)
+	require.NoError(t, err)
+
+	expected := []byte{0x01, 0x02, 0x03, 0x04}
+	require.Equal(t, expected, buf)
+
+	err = client.Close()
+	require.NoError(t, err)
+	err = server.Close()
+	require.NoError(t, err)
+}
 
 func TestHTTPServerSimulation(t *testing.T) {
 	config := testBuildServerConfig()
