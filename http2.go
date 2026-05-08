@@ -2,6 +2,7 @@ package msocks
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"net"
 
@@ -10,11 +11,10 @@ import (
 
 const (
 	settingFrameSize = 46
+	windowsUpdate    = 19
 )
 
 func simulateHTTP2Client(conn net.Conn, preface []byte) error {
-	// rand := newMathRand()
-
 	if len(preface) == 0 {
 		preface = []byte(http2.ClientPreface)
 	}
@@ -29,19 +29,43 @@ func simulateHTTP2Client(conn net.Conn, preface []byte) error {
 	}
 
 	// write the first request with header
-	// buf.Reset()
-	// buf.Write(bytes.Repeat([]byte{0x00}, rand))
+	rand := newMathRand()
+	size := 384 + int(binary.BigEndian.Uint32(preface)%256)
+	if rand.Intn(4+rand.Intn(8)) == 0 {
+		size += rand.Intn(128)
+	}
+	buf.Reset()
+	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(size)))
+	buf.Write(bytes.Repeat([]byte{0x00}, size))
+	_, err = buf.WriteTo(conn)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
 func simulateHTTP2Server(conn net.Conn) error {
-	size := 0
-	size += len(http2.ClientPreface)
+	// discard preface + setting
+	size := int64(0)
+	size += int64(len(http2.ClientPreface))
 	size += settingFrameSize
-	_, err := io.CopyN(io.Discard, conn, int64(size))
+	_, err := io.CopyN(io.Discard, conn, size)
 	if err != nil {
 		return err
 	}
+
+	// discard first request with header
+	buf := make([]byte, 2)
+	_, err = io.ReadFull(conn, buf)
+	if err != nil {
+		return err
+	}
+	size = int64(binary.BigEndian.Uint16(buf))
+	_, err = io.CopyN(io.Discard, conn, size)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
