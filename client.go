@@ -24,6 +24,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -35,9 +36,11 @@ const (
 type Client struct {
 	logger *logger
 
-	secret     []byte
-	passHash   string
-	pathHash   string
+	hashBin  []byte
+	passHash string
+	pathHash string
+	preface  []byte
+
 	timeout    time.Duration
 	preConns   int
 	bufferSize int
@@ -74,9 +77,10 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		return nil, errors.Wrap(err, "failed to open log file")
 	}
 	h := sha256.Sum256([]byte(config.Common.Password))
-	secret := h[:]
-	passHash := hex.EncodeToString(secret)
+	hashBin := h[:]
+	passHash := hex.EncodeToString(hashBin)
 	pathHash := passHash[:8] + passHash[32:32+8]
+	preface := hashBin[:len(http2.ClientPreface)]
 	timeout := time.Duration(config.Client.Timeout)
 	if timeout < time.Second {
 		timeout = defaultClientTimeout
@@ -125,9 +129,11 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	client := Client{
 		logger: logger,
 
-		secret:     secret,
-		passHash:   passHash,
-		pathHash:   pathHash,
+		hashBin:  hashBin,
+		passHash: passHash,
+		pathHash: pathHash,
+		preface:  preface,
+
 		timeout:    timeout,
 		preConns:   preConns,
 		bufferSize: bufferSize,
@@ -160,7 +166,7 @@ func (c *Client) buildURL(path string) string {
 func (c *Client) Login() error {
 	conn, err := c.dial()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to connect to server")
 	}
 	var success bool
 	defer func() {
@@ -204,7 +210,7 @@ func (c *Client) Login() error {
 func (c *Client) Logout() error {
 	conn, err := c.dial()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to connect to server")
 	}
 	defer func() { _ = conn.Close() }()
 	// build request about logout
@@ -488,7 +494,7 @@ func (c *Client) generator() {
 		_, _ = rd.Read(buf)
 		hash.Reset()
 		hash.Write(buf)
-		hash.Write(c.secret)
+		hash.Write(c.hashBin)
 		if !isCovertDigest(hash.Sum(nil)) {
 			continue
 		}
@@ -575,7 +581,7 @@ func (c *Client) dial() (net.Conn, error) {
 	dialer := c.buildDialer()
 	conn, err := dialer.DialContext(c.ctx, c.serverNet, c.serverAddr)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to server")
+		return nil, err
 	}
 	colonPos := strings.LastIndex(c.serverAddr, ":")
 	if colonPos == -1 {
@@ -611,13 +617,17 @@ func (c *Client) dial() (net.Conn, error) {
 	if uc.ConnectionState().NegotiatedProtocol != "h2" {
 		return nil, errors.New("invalid negotiated protocol")
 	}
+	err = simulateHTTP2Client(uc, c.preface)
+	if err != nil {
+		return nil, err
+	}
 	return uc, nil
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
 	conn, err := c.dial()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to connect to server")
 	}
 	var success bool
 	defer func() {
