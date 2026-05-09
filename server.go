@@ -423,6 +423,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if proto != "h2" {
 		ol := newOnceListener(uConn)
 		_ = s.http2.Serve(ol)
+		success = true
 		return
 	}
 	if !uConn.covert {
@@ -447,9 +448,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	success = true
 	ol := newOnceListener(bConn)
 	_ = s.http1.Serve(ol)
+	success = true
 }
 
 func (s *Server) serveHTTP2(conn net.Conn) {
