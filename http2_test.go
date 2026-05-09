@@ -2,6 +2,7 @@ package msocks
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -15,30 +16,61 @@ import (
 )
 
 func TestHTTP2Simulation(t *testing.T) {
-	client, server := net.Pipe()
+	t.Run("function", func(t *testing.T) {
+		client, server := net.Pipe()
 
-	go func() {
-		err := simulateHTTP2Server(server)
+		go func() {
+			err := simulateHTTP2Server(server)
+			require.NoError(t, err)
+
+			_, err = server.Write([]byte{0x01, 0x02, 0x03, 0x04})
+			require.NoError(t, err)
+		}()
+
+		err := simulateHTTP2Client(client, nil)
 		require.NoError(t, err)
 
-		_, err = server.Write([]byte{0x01, 0x02, 0x03, 0x04})
+		buf := make([]byte, 4)
+		_, err = io.ReadFull(client, buf)
 		require.NoError(t, err)
-	}()
 
-	err := simulateHTTP2Client(client, nil)
-	require.NoError(t, err)
+		expected := []byte{0x01, 0x02, 0x03, 0x04}
+		require.Equal(t, expected, buf)
 
-	buf := make([]byte, 4)
-	_, err = io.ReadFull(client, buf)
-	require.NoError(t, err)
+		err = client.Close()
+		require.NoError(t, err)
+		err = server.Close()
+		require.NoError(t, err)
+	})
 
-	expected := []byte{0x01, 0x02, 0x03, 0x04}
-	require.Equal(t, expected, buf)
+	t.Run("instance", func(t *testing.T) {
+		defer func() {
+			testRemoveClientLogFile(t)
+			testRemoveServerLogFile(t)
+		}()
 
-	err = client.Close()
-	require.NoError(t, err)
-	err = server.Close()
-	require.NoError(t, err)
+		serverCfg := testBuildServerConfig()
+		server, err := NewServer(context.Background(), serverCfg)
+		require.NoError(t, err)
+		require.NotNil(t, server)
+		go func() {
+			err := server.Serve()
+			require.NoError(t, err)
+		}()
+
+		clientCfg := testBuildClientConfig()
+		clientCfg.Client.PreConns = 0
+		client, err := NewClient(clientCfg)
+		require.NoError(t, err)
+		err = client.Login()
+		require.NoError(t, err)
+
+		err = client.Close()
+		require.NoError(t, err)
+
+		err = server.Close()
+		require.NoError(t, err)
+	})
 }
 
 func TestHTTPServerSimulation(t *testing.T) {
