@@ -7,12 +7,15 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/For-ACGN/utls"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/http2"
 )
 
 const testServerLogFile = "testdata/server.log"
@@ -67,7 +70,67 @@ func TestServer_Serve(t *testing.T) {
 }
 
 func TestServer_handleConn(t *testing.T) {
+	defer func() {
+		testRemoveServerLogFile(t)
+		testRemoveClientLogFile(t)
+	}()
 
+	serverCfg := testBuildServerConfig()
+	server, err := NewServer(context.Background(), serverCfg)
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	address := serverCfg.HTTP.Address
+
+	go func() {
+		err := server.Serve()
+		require.NoError(t, err)
+	}()
+
+	clientCfg := testBuildClientConfig()
+	client, err := NewClient(clientCfg)
+	require.NoError(t, err)
+
+	certs, err := parseCertificatesPEM([]byte(clientCfg.Server.RootCA))
+	require.NoError(t, err)
+	tlsConfig := utls.Config{
+		NextProtos: []string{"h2", "http/1.1"},
+	}
+	tlsConfig.RootCAs = x509.NewCertPool()
+	tlsConfig.RootCAs.AddCert(certs[0])
+
+	URL := fmt.Sprintf("https://%s/", address)
+	req, err := http.NewRequest(http.MethodGet, URL, nil)
+	require.NoError(t, err)
+
+	transport := http2.Transport{
+		DialTLSContext: func(context.Context, string, string, *tls.Config) (net.Conn, error) {
+			cfg := tlsConfig.Clone()
+			cfg.Random = <-client.randCh
+			conn, err := utls.Dial("tcp", address, cfg)
+			if err != nil {
+				return nil, err
+			}
+			err = conn.Handshake()
+			if err != nil {
+				return nil, err
+			}
+			return conn, nil
+		},
+	}
+
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	require.Equal(t, "HTTP/2.0", resp.Proto)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	transport.CloseIdleConnections()
+
+	err = client.Close()
+	require.NoError(t, err)
+
+	err = server.Close()
+	require.NoError(t, err)
 }
 
 func TestServer_Simulation(t *testing.T) {
@@ -122,7 +185,7 @@ func TestServer_Simulation(t *testing.T) {
 		}
 	})
 
-	t.Run("http/2", func(t *testing.T) {
+	t.Run("http/2.0", func(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			tlsConfig = tlsConfig.Clone()
 			tlsConfig.NextProtos = []string{"h2", "http/1.1"}
@@ -141,6 +204,8 @@ func TestServer_Simulation(t *testing.T) {
 			_ = resp.Body.Close()
 
 			tr.CloseIdleConnections()
+
+			time.Sleep(10 * time.Millisecond)
 		}
 	})
 
