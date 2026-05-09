@@ -431,13 +431,14 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	reader := bufio.NewReader(uConn)
+	bConn := newBufConn(uConn, reader)
 	preface, err := reader.Peek(len(http2.ClientPreface))
 	if err != nil {
 		format := "failed to read secret preface from %s: %s"
 		s.logger.Warningf(format, uConn.RemoteAddr(), err)
+		s.serveHTTP2(bConn)
 		return
 	}
-	bConn := newBufConn(uConn, reader)
 	if subtle.ConstantTimeCompare(s.preface, preface) != 1 {
 		format := "invalid secret preface from %s"
 		s.logger.Warningf(format, uConn.RemoteAddr())
