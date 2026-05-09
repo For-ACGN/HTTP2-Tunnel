@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -60,6 +61,8 @@ func TestHTTPServerSimulation(t *testing.T) {
 	tlsConfig.RootCAs = x509.NewCertPool()
 	tlsConfig.RootCAs.AddCert(certs[0])
 
+	URL := fmt.Sprintf("https://%s/", server.Addr)
+
 	t.Run("http/1.1", func(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			tlsConfig = tlsConfig.Clone()
@@ -73,7 +76,7 @@ func TestHTTPServerSimulation(t *testing.T) {
 			proto := conn.ConnectionState().NegotiatedProtocol
 			require.Equal(t, "http/1.1", proto)
 
-			req, err := http.NewRequest(http.MethodGet, "/", nil)
+			req, err := http.NewRequest(http.MethodGet, URL, nil)
 			require.NoError(t, err)
 			err = req.Write(conn)
 			require.NoError(t, err)
@@ -89,7 +92,31 @@ func TestHTTPServerSimulation(t *testing.T) {
 		}
 	})
 
-	t.Run("http/2", func(t *testing.T) {
+	t.Run("http/2.0", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			tlsConfig = tlsConfig.Clone()
+			tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+
+			req, err := http.NewRequest(http.MethodGet, URL, nil)
+			require.NoError(t, err)
+
+			tr := http.Transport{
+				TLSClientConfig:   tlsConfig,
+				ForceAttemptHTTP2: true,
+			}
+			resp, err := tr.RoundTrip(req)
+			require.NoError(t, err)
+			require.Equal(t, "HTTP/2.0", resp.Proto)
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+
+			tr.CloseIdleConnections()
+
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("h2 but h1 request", func(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			tlsConfig = tlsConfig.Clone()
 			tlsConfig.NextProtos = []string{"h2", "http/1.1"}
@@ -102,7 +129,7 @@ func TestHTTPServerSimulation(t *testing.T) {
 			proto := conn.ConnectionState().NegotiatedProtocol
 			require.Equal(t, "h2", proto)
 
-			req, err := http.NewRequest(http.MethodGet, "/", nil)
+			req, err := http.NewRequest(http.MethodGet, URL, nil)
 			require.NoError(t, err)
 			err = req.Write(conn)
 			require.NoError(t, err)
