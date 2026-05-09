@@ -33,8 +33,8 @@ func testBuildClientConfig() *ClientConfig {
 	config.Common.LogPath = testClientLogFile
 	config.Common.Password = testPassword
 	config.Client.PreConns = 4
-	config.Server.Network = "tcp"
-	config.Server.Address = "127.0.0.1:2019"
+	config.Server.Network = "tcp4"
+	config.Server.Address = "localhost:2019"
 	config.Server.RootCA = string(ca)
 	config.Front.Network = "tcp"
 	config.Front.Address = "127.0.0.1:2020"
