@@ -105,8 +105,9 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	)
 	switch config.TLS.Mode {
 	case TLSModeACME:
+		domains := config.TLS.ACME.Domains
 		ac := autocert.Config{
-			Domains:   config.TLS.ACME.Domains,
+			Domains:   domains,
 			ForceHTTP: true,
 		}
 		acl, err = autocert.NewListener(ctx, listener, &ac)
@@ -114,6 +115,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 			return nil, err
 		}
 		cfg = &tls.Config{
+			ServerName:     domains[0],
 			GetCertificate: acl.GetCertificate,
 		}
 	case TLSModeStatic:
@@ -445,7 +447,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.serveHTTP2(bConn)
 		return
 	}
-	err = simulateHTTP2Server(bConn)
+	err = simulateHTTP2Server(bConn, s.preface)
 	if err != nil {
 		return
 	}
