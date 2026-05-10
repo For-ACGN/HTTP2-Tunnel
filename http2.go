@@ -5,95 +5,167 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"time"
 
 	"golang.org/x/net/http2"
 )
 
 const (
-	settingFrameSize = 46
-	srvPacket1       = 39 // TODO adjust ?
-	srvPacket2       = 22 // TODO adjust ?
-	cliPacket1       = 9  // TODO adjust ?
+	http2PrefaceSize = 24
+	streamHeaderSize = 3 + 1 + 1 + 4
+
+	cliSettingsSize     = streamHeaderSize + 24
+	cliWindowUpdateSize = streamHeaderSize + 4
+	cliAcknowledgeSize  = streamHeaderSize
+
+	srvSettingsSize     = streamHeaderSize + 30
+	srvAcknowledgeSize  = streamHeaderSize
+	srvWindowUpdateSize = streamHeaderSize + 4
 )
 
 func simulateHTTP2Client(conn net.Conn, preface []byte) error {
+	rand := newMathRand()
+
 	if len(preface) == 0 {
 		preface = []byte(http2.ClientPreface)
 	}
 
-	// write preface and setting frame
-	buf := bytes.NewBuffer(make([]byte, 0, len(preface)+64))
-	buf.Write(preface)
-	buf.Write(bytes.Repeat([]byte{0x00}, settingFrameSize))
-	_, err := buf.WriteTo(conn)
+	// write preface, settings, window update in one tls record
+	buffer := bytes.NewBuffer(make([]byte, 0, len(preface)+64))
+	buffer.Write(preface)
+	buffer.Write(bytes.Repeat([]byte{0x00}, cliSettingsSize))
+	buffer.Write(bytes.Repeat([]byte{0x00}, cliWindowUpdateSize))
+	_, err := buffer.WriteTo(conn)
 	if err != nil {
 		return err
 	}
 
-	// write the first request with header
-	rand := newMathRand()
+	// write headers and window update
 	size := 384 + int(binary.BigEndian.Uint32(preface)%256)
-	if rand.Intn(4+rand.Intn(8)) == 0 {
+	if rand.Intn(8+rand.Intn(10)) == 0 {
 		size += rand.Intn(128)
 	}
-	buf.Reset()
-	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(size)))
-	buf.Write(bytes.Repeat([]byte{0x00}, size))
-	_, err = buf.WriteTo(conn)
+	err = sendPaddingDataBlock(conn, size)
 	if err != nil {
 		return err
 	}
 
-	// discard server packet 1 and 2
-	_, err = io.CopyN(io.Discard, conn, int64(srvPacket1+srvPacket2))
+	// discard server settings
+	// # WARNING not use io.CopyN because of too large
+	// under buffer that will receive the next frames.
+	buf := make([]byte, srvSettingsSize)
+	_, err = io.ReadFull(conn, buf)
+	if err != nil {
+		return err
+	}
+	// send client acknowledge
+	_, err = conn.Write(bytes.Repeat([]byte{0x00}, cliAcknowledgeSize))
+	if err != nil {
+		return err
+	}
+	// discard server acknowledge and window update
+	_, err = io.CopyN(io.Discard, conn, srvAcknowledgeSize+srvWindowUpdateSize)
 	if err != nil {
 		return err
 	}
 
-	// send client packet 1
-	_, err = conn.Write(bytes.Repeat([]byte{0x00}, cliPacket1))
+	// discard processed header
+	err = receivePaddingData(conn)
+	if err != nil {
+		return err
+	}
+
+	// discard the first data block
+	err = receivePaddingData(conn)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func simulateHTTP2Server(conn net.Conn) error {
-	// discard preface + setting
-	size := int64(0)
-	size += int64(len(http2.ClientPreface))
-	size += settingFrameSize
-	_, err := io.CopyN(io.Discard, conn, size)
+func simulateHTTP2Server(conn net.Conn, preface []byte) error {
+	rand := newMathRand()
+
+	// discard preface + settings + window update
+	size := 0
+	size += http2PrefaceSize
+	size += cliSettingsSize
+	size += cliWindowUpdateSize
+	_, err := io.CopyN(io.Discard, conn, int64(size))
 	if err != nil {
 		return err
 	}
 
-	// discard first request with header
-	buf := make([]byte, 2)
-	_, err = io.ReadFull(conn, buf)
-	if err != nil {
-		return err
-	}
-	size = int64(binary.BigEndian.Uint16(buf))
-	_, err = io.CopyN(io.Discard, conn, size)
+	// discard headers and window update
+	err = receivePaddingData(conn)
 	if err != nil {
 		return err
 	}
 
-	// send server packet 1 and 2
-	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvPacket1))
-	if err != nil {
-		return err
-	}
-	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvPacket2))
+	// send server settings // TODO + 6 (jitter) - 2 buf size
+	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvSettingsSize))
 	if err != nil {
 		return err
 	}
 
-	// discard client packet 1
-	_, err = io.CopyN(io.Discard, conn, int64(cliPacket1))
+	// send server acknowledge and window update
+	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvAcknowledgeSize+srvWindowUpdateSize))
+	if err != nil {
+		return err
+	}
+
+	// simulate process header
+	time.Sleep(time.Duration(1+rand.Intn(2)) * time.Millisecond)
+
+	// send processed header
+	size = 64 + int(binary.BigEndian.Uint32(preface)%256)
+	if rand.Intn(8+rand.Intn(10)) == 0 {
+		size += rand.Intn(64)
+	}
+	err = sendPaddingDataBlock(conn, size)
+	if err != nil {
+		return err
+	}
+
+	// send the first data block
+	size = 648 + int(binary.BigEndian.Uint32(preface)%256)
+	if rand.Intn(8+rand.Intn(10)) == 0 {
+		size += rand.Intn(512)
+	}
+	err = sendPaddingDataBlock(conn, size)
+	if err != nil {
+		return err
+	}
+
+	// discard client acknowledge
+	_, err = io.CopyN(io.Discard, conn, cliAcknowledgeSize)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+// +--------+---------+
+// |  size  | padding |
+// +--------+---------+
+// | uint16 |   var   |
+// +--------+---------+
+
+func sendPaddingDataBlock(conn net.Conn, size int) error {
+	buf := bytes.NewBuffer(make([]byte, 0, 2+size))
+	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(size)))
+	buf.Write(bytes.Repeat([]byte{0x00}, size))
+	_, err := buf.WriteTo(conn)
+	return err
+}
+
+func receivePaddingData(conn net.Conn) error {
+	buf := make([]byte, 2)
+	_, err := io.ReadFull(conn, buf)
+	if err != nil {
+		return err
+	}
+	size := int(binary.BigEndian.Uint16(buf))
+	_, err = io.CopyN(io.Discard, conn, int64(size))
+	return err
 }
