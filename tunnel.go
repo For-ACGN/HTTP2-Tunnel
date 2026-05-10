@@ -18,12 +18,14 @@ import (
 
 const (
 	maxObfDataSize = 512
-	minSegmentSize = 64
+	minSegmentSize = 128
 )
 
 var (
 	tlsClientHelloPrefix = []byte{0x16, 0x03, 0x01}
-	tlsClientHelloHTTP   = []byte("\x02h2\x08http/1.1")
+	tlsClientHelloHTTP1o = []byte("\x00\x09\x08http/1.1")
+	tlsClientHelloHTTP2o = []byte("\x00\x03\x02h2")
+	tlsClientHelloHTTPx  = []byte("\x00\x0C\x02h2\x08http/1.1")
 )
 
 type tunnel struct {
@@ -52,8 +54,8 @@ type tunnel struct {
 	// about special control
 	sniffed bool
 	isTLS   bool
-	isHTTP  bool
-	isHTTPS bool
+	isHTTP1 bool
+	isHTTP2 bool
 
 	rmu sync.Mutex
 	wmu sync.Mutex
@@ -210,11 +212,11 @@ func (t *tunnel) Write(b []byte) (int, error) {
 	}
 	buf := t.writeBuf[:len(b)]
 	t.writer.XORKeyStream(buf, b)
+	t.writeCtr++
 	// special case for HTTPS
-	if t.isHTTPS {
+	if t.isHTTP2 {
 		return t.writeSegment(buf)
 	}
-	t.writeCtr++
 	if t.writeCtr < uint64(16+t.mRand.Intn(32)) { // #nosec
 		return t.writeSegment(buf)
 	}
@@ -234,16 +236,19 @@ func (t *tunnel) sniff(b []byte) {
 	switch {
 	case bytes.HasPrefix(b, tlsClientHelloPrefix):
 		switch {
-		case bytes.Contains(b, tlsClientHelloHTTP):
-			t.isHTTPS = true
-		default:
-			t.isTLS = true
+		case bytes.Contains(b, tlsClientHelloHTTP1o):
+			t.isHTTP1 = true
+		case bytes.Contains(b, tlsClientHelloHTTP2o):
+			t.isHTTP2 = true
+		case bytes.Contains(b, tlsClientHelloHTTPx):
+			t.isHTTP2 = true
 		}
+		t.isTLS = true
 	case bytes.HasPrefix(b, []byte(http.MethodGet)),
 		bytes.HasPrefix(b, []byte(http.MethodPost)),
 		bytes.HasPrefix(b, []byte(http.MethodConnect)),
 		bytes.HasPrefix(b, []byte(http.MethodOptions)):
-		t.isHTTP = true
+		t.isHTTP1 = true
 	}
 }
 
@@ -254,16 +259,9 @@ func (t *tunnel) writeSegment(b []byte) (int, error) {
 	}
 
 	// prepare the number of the segments
-	var numSegments int
-	switch {
-	case t.isHTTPS:
-		numSegments = 3 + t.mRand.Intn(1+t.jit*2)
-	case t.isHTTP:
-		numSegments = 3 + t.mRand.Intn(1+t.jit*8)
-	case t.isTLS:
-		numSegments = 2 + t.mRand.Intn(1+t.jit*(total/1024))
-	default:
-		numSegments = 2 + t.mRand.Intn(1+t.jit*(total/512))
+	numSegments := t.determineNumSegments(total)
+	if numSegments <= 1 {
+		return t.Conn.Write(b)
 	}
 
 	// generate split points
@@ -310,4 +308,46 @@ func (t *tunnel) writeSegment(b []byte) (int, error) {
 		offset += size
 	}
 	return total, nil
+}
+
+func (t *tunnel) determineNumSegments(total int) int {
+	if t.writeCtr == 1 {
+		return 2 + t.mRand.Intn(6)
+	}
+	var numSegments int
+	switch {
+	case t.isHTTP1:
+		numSegments = 2 + t.mRand.Intn(3+t.jit*(total/2048))
+	case t.isTLS:
+		numSegments = 1 + t.mRand.Intn(1+t.jit*(total/1024))
+	default:
+		numSegments = 1 + t.mRand.Intn(2+t.jit*(total/1024))
+	}
+	if !t.isHTTP2 {
+		return 1 + numSegments
+	}
+	switch {
+	case total > 12288:
+		if t.mRand.Intn(10) > t.jit {
+			return 1
+		}
+		return 2 + t.mRand.Intn(2)
+	case total > 4096:
+		if t.mRand.Intn(6) > t.jit {
+			return 1
+		}
+		return 2 + t.mRand.Intn(2)
+	case total > 1024:
+		if t.mRand.Intn(4) > t.jit {
+			return 1
+		}
+		return 1 + t.mRand.Intn(2)
+	case total > 256:
+		if t.mRand.Intn(3) > t.jit {
+			return 1
+		}
+		return 2
+	default:
+		return 1
+	}
 }
