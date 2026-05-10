@@ -28,6 +28,16 @@ func newUTLSListener(listener net.Listener, config *tls.Config, secret []byte) *
 				CipherSuites: hello.CipherSuites,
 			}
 			cert, err := config.GetCertificate(h)
+			if err == nil {
+				return utls.ToUTLSCertificate(cert), nil
+			}
+			// get the certificate with the first domain name
+			// for defense the active detection
+			h = &tls.ClientHelloInfo{
+				ServerName:   config.ServerName,
+				CipherSuites: hello.CipherSuites,
+			}
+			cert, err = config.GetCertificate(h)
 			if err != nil {
 				return nil, err
 			}
@@ -89,7 +99,7 @@ func (ol *onceListener) Accept() (net.Conn, error) {
 	ol.mu.Lock()
 	defer ol.mu.Unlock()
 	if ol.acc {
-		return nil, errors.New("listener already accepted")
+		return nil, errors.New("listener is already accepted")
 	}
 	ol.acc = true
 	return ol.conn, nil
