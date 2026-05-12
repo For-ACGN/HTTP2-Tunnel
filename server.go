@@ -29,6 +29,12 @@ const (
 	TLSModeStatic = "static"
 )
 
+// Web mode about the to configure the front web service.
+const (
+	WebModeProxy  = "proxy"
+	WebModeStatic = "static"
+)
+
 const (
 	defaultMaxConns      = 10000
 	defaultServerTimeout = 2 * time.Minute
@@ -42,13 +48,13 @@ type Server struct {
 	preface    []byte
 	timeout    time.Duration
 	maxBufSize int
+	webMode    string
 
 	acl *autocert.Listener
 	cfg *tls.Config
-	dir string
-	hfs http.Handler
 
 	listener net.Listener
+	handler  http.Handler
 
 	http1 *http.Server
 	http2 *http.Server
@@ -87,10 +93,11 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	if maxBufSize < 1 {
 		maxBufSize = defaultMaxBufferSize
 	}
-	webDir := config.Web.Directory
-	if !isDir(webDir) {
-		return nil, errors.New("invalid web directory")
+	handler, err := prepareWebHandler(logger, config)
+	if err != nil {
+		return nil, err
 	}
+	// prepare the listener
 	network := config.HTTP.Network
 	address := config.HTTP.Address
 	listener, err := net.Listen(network, address)
@@ -103,7 +110,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		acl *autocert.Listener
 		cfg *tls.Config
 	)
-	switch config.TLS.Mode {
+	switch mode := config.TLS.Mode; mode {
 	case TLSModeACME:
 		domains := config.TLS.ACME.Domains
 		ac := autocert.Config{
@@ -128,7 +135,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 			Certificates: []tls.Certificate{cert},
 		}
 	default:
-		return nil, fmt.Errorf("unknown TLS mode: %s", config.TLS.Mode)
+		return nil, fmt.Errorf("unknown TLS mode: %s", mode)
 	}
 	listener = newUTLSListener(listener, cfg, hashBin)
 	// create http servers
@@ -139,13 +146,13 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		preface:    preface,
 		timeout:    timeout,
 		maxBufSize: maxBufSize,
+		webMode:    config.Web.Mode,
 
 		acl: acl,
 		cfg: cfg,
-		dir: webDir,
-		hfs: http.FileServer(http.Dir(webDir)),
 
 		listener: listener,
+		handler:  handler,
 	}
 	serverMux := http.NewServeMux()
 	serverMux.HandleFunc(fmt.Sprintf("/%s/login", pathHash), server.handleLogin)
@@ -179,8 +186,41 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	return &server, nil
 }
 
+func prepareWebHandler(logger *logger, config *ServerConfig) (http.Handler, error) {
+	var handler http.Handler
+	switch mode := config.Web.Mode; mode {
+	case WebModeProxy:
+		var err error
+		proxy := config.Web.Proxy
+		handler, err = newReverseProxy(logger, proxy.Target, proxy.Filter)
+		if err != nil {
+			return nil, err
+		}
+	case WebModeStatic:
+		dir := config.Web.Static.Directory
+		if !isDir(dir) {
+			return nil, errors.New("invalid web directory")
+		}
+		handler = newHFS(dir)
+	default:
+		return nil, fmt.Errorf("unknown web mode: %s", mode)
+	}
+	return handler, nil
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	s.handleFile(w, r)
+	// copy the request body data
+	body := bytes.NewBuffer(make([]byte, 0, 4096))
+	tr := io.TeeReader(r.Body, body)
+	r.Body = &struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: tr,
+		Closer: r.Body,
+	}
+	// serve request
+	s.handler.ServeHTTP(w, r)
 	// print income request
 	buf := bytes.NewBuffer(make([]byte, 0, 512))
 	_, _ = fmt.Fprintf(buf, "Remote: %s\n", r.RemoteAddr)                  // client ip
@@ -192,8 +232,19 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	buf.WriteString("\n")
 	// print post body if exists
-	if r.ContentLength != 0 {
-		_, _ = io.CopyN(buf, r.Body, 32*1024)
+	var bd io.Reader
+	switch s.webMode {
+	case WebModeProxy:
+		if body.Len() > 0 {
+			bd = body
+		}
+	case WebModeStatic:
+		if r.ContentLength != 0 {
+			bd = r.Body
+		}
+	}
+	if bd != nil {
+		_, _ = io.CopyN(buf, bd, 32*1024)
 		buf.WriteString("\n")
 	}
 	s.logger.Info(buf)
