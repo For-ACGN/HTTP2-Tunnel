@@ -1,6 +1,6 @@
 module github.com/For-ACGN/MIX-Socks
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1
@@ -13,6 +13,8 @@ require (
 
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.53.0
+
+	github.com/For-ACGN/htls v0.0.0-20260512054901-9747c098e8db
 )
 
 require (
