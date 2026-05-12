@@ -43,7 +43,16 @@ type ServerConfig struct {
 	} `toml:"tunnel"`
 
 	Web struct {
-		Directory string `toml:"directory"`
+		Mode string `toml:"mode"`
+
+		Proxy struct {
+			Target string   `toml:"target"`
+			Filter []string `toml:"filter"`
+		} `toml:"proxy"`
+
+		Static struct {
+			Directory string `toml:"dir"`
+		} `toml:"static"`
 	} `toml:"web"`
 }
 
