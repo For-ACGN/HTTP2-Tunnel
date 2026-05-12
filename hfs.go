@@ -9,13 +9,23 @@ import (
 	"strings"
 )
 
-func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
+type hfs struct {
+	dir string
+	hfs http.Handler
+}
+
+func newHFS(dir string) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
+	return &hfs{dir: dir, hfs: fs}
+}
+
+func (hfs *hfs) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// prevent directory traversal
 	path := r.URL.Path
 	if path == "/" {
 		path = "/index.html"
 	}
-	if isDir(filepath.Join(s.dir, path)) {
+	if isDir(filepath.Join(hfs.dir, path)) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -44,7 +54,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	// prevent incorrect cache
 	r.Header.Del("If-Modified-Since")
 	// process file
-	s.hfs.ServeHTTP(w, r)
+	hfs.hfs.ServeHTTP(w, r)
 }
 
 func isDir(path string) bool {
