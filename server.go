@@ -37,7 +37,9 @@ const (
 
 const (
 	defaultMaxConns      = 10000
-	defaultServerTimeout = 2 * time.Minute
+	defaultServerTimeout = 5 * time.Minute
+	minimumServerTimeout = 3 * time.Minute
+	maximumRequestBody   = 8 * 1024 * 1024
 )
 
 // Server is a SOCKS-over-HTTPS server.
@@ -82,7 +84,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	pathHash := passHash[:8] + passHash[32:32+8]
 	preface := hashBin[:len(http2.ClientPreface)]
 	timeout := time.Duration(config.HTTP.Timeout)
-	if timeout < time.Second {
+	if timeout < minimumServerTimeout {
 		timeout = defaultServerTimeout
 	}
 	maxConns := config.HTTP.MaxConns
@@ -137,7 +139,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	default:
 		return nil, fmt.Errorf("unknown TLS mode: %s", mode)
 	}
-	listener = newUTLSListener(listener, cfg, hashBin)
+	listener = newHTLSListener(listener, cfg, hashBin)
 	// create http servers
 	server := Server{
 		logger: logger,
@@ -155,11 +157,14 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		handler:  handler,
 	}
 	serverMux := http.NewServeMux()
+	serverMux.HandleFunc("/", server.handleIndex)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/login", pathHash), server.handleLogin)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/logout", pathHash), server.handleLogout)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/ping", pathHash), server.handlePing)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/connect", pathHash), server.handleConnect)
 	// explicitly enable HTTP/1.1 only for covert usage
+	// if reach this server with h2, that means the client
+	// has been attacked with MITM.
 	http1Srv := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
@@ -167,8 +172,8 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	http1Srv.Protocols = new(http.Protocols)
 	http1Srv.Protocols.SetHTTP1(true)
-	http1Srv.Protocols.SetHTTP2(false)
-	http1Srv.Protocols.SetUnencryptedHTTP2(false)
+	http1Srv.Protocols.SetHTTP2(true)
+	http1Srv.Protocols.SetUnencryptedHTTP2(true)
 	// explicitly enable HTTP/1.1 and HTTP/2 for common usage
 	serverMux = http.NewServeMux()
 	serverMux.HandleFunc("/", server.handleIndex)
@@ -205,18 +210,17 @@ func prepareWebHandler(logger *logger, config *ServerConfig) (http.Handler, erro
 	default:
 		return nil, fmt.Errorf("unknown web mode: %s", mode)
 	}
-	return handler, nil
+	return http.MaxBytesHandler(handler, maximumRequestBody), nil
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// copy the request body data
 	body := bytes.NewBuffer(make([]byte, 0, 4096))
-	tr := io.TeeReader(r.Body, body)
 	r.Body = &struct {
 		io.Reader
 		io.Closer
 	}{
-		Reader: tr,
+		Reader: io.TeeReader(r.Body, body),
 		Closer: r.Body,
 	}
 	// serve request
@@ -246,6 +250,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if bd != nil {
 		_, _ = io.CopyN(buf, bd, 32*1024)
 		buf.WriteString("\n")
+		_, _ = io.Copy(io.Discard, bd)
 	}
 	s.logger.Info(buf)
 }
@@ -401,7 +406,7 @@ func (s *Server) negotiate(r *http.Request) ([]byte, []byte, error) {
 	}
 	if len(clientPub) != curve25519.ScalarSize {
 		s.logger.Error("receive invalid public key from:", r.RemoteAddr)
-		return nil, nil, err
+		return nil, nil, err // TODO fix bug
 	}
 	// process key exchange
 	serverPri := make([]byte, curve25519.ScalarSize)
@@ -465,36 +470,36 @@ func (s *Server) handleConn(conn net.Conn) {
 			_ = conn.Close()
 		}
 	}()
-	uConn := conn.(*utlsConn)
-	err := uConn.Handshake()
+	hConn := conn.(*htlsConn)
+	err := hConn.Handshake()
 	if err != nil {
 		format := "failed to handshake from %s: %s"
-		s.logger.Warningf(format, uConn.RemoteAddr(), err)
+		s.logger.Warningf(format, hConn.RemoteAddr(), err)
 		return
 	}
-	proto := uConn.ConnectionState().NegotiatedProtocol
+	proto := hConn.ConnectionState().NegotiatedProtocol
 	if proto != "h2" {
-		ol := newOnceListener(uConn)
+		ol := newOnceListener(hConn)
 		_ = s.http2.Serve(ol)
 		success = true
 		return
 	}
-	if !uConn.covert {
-		s.serveHTTP2(uConn)
+	if !hConn.covert {
+		s.serveHTTP2(hConn)
 		return
 	}
-	reader := bufio.NewReader(uConn)
-	bConn := newBufConn(uConn, reader)
+	reader := bufio.NewReader(hConn)
+	bConn := newBufConn(hConn, reader)
 	preface, err := reader.Peek(len(http2.ClientPreface))
 	if err != nil {
 		format := "failed to read secret preface from %s: %s"
-		s.logger.Warningf(format, uConn.RemoteAddr(), err)
+		s.logger.Warningf(format, hConn.RemoteAddr(), err)
 		s.serveHTTP2(bConn)
 		return
 	}
 	if subtle.ConstantTimeCompare(s.preface, preface) != 1 {
 		format := "invalid secret preface from %s"
-		s.logger.Warningf(format, uConn.RemoteAddr())
+		s.logger.Warningf(format, hConn.RemoteAddr())
 		s.serveHTTP2(bConn)
 		return
 	}
