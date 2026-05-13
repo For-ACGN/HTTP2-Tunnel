@@ -148,7 +148,7 @@ func (t *tunnel) Handshake() error {
 	}
 	obfSize = binary.BigEndian.Uint16(buf)
 	if obfSize >= maxObfDataSize {
-		t.handshakeErr = errors.Wrap(err, "invalid obf data size")
+		t.handshakeErr = errors.New("invalid obf data size")
 		return t.handshakeErr
 	}
 	_, err = io.CopyN(io.Discard, t.Conn, int64(obfSize))
