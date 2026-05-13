@@ -6,30 +6,30 @@ import (
 	"net"
 	"sync"
 
-	"github.com/For-ACGN/utls"
+	"github.com/For-ACGN/htls"
 	"github.com/pkg/errors"
 )
 
 var tlsNextProtos = []string{"h2", "http/1.1"}
 
-type utlsListener struct {
+type htlsListener struct {
 	net.Listener
 
-	config *utls.Config
+	config *htls.Config
 	secret []byte
 }
 
-func newUTLSListener(listener net.Listener, config *tls.Config, secret []byte) *utlsListener {
-	cfg := &utls.Config{}
+func newHTLSListener(listener net.Listener, config *tls.Config, secret []byte) *htlsListener {
+	cfg := &htls.Config{}
 	if config.GetCertificate != nil {
-		wrapper := func(hello *utls.ClientHelloInfo) (*utls.Certificate, error) {
+		wrapper := func(hello *htls.ClientHelloInfo) (*htls.Certificate, error) {
 			h := &tls.ClientHelloInfo{
 				ServerName:   hello.ServerName,
 				CipherSuites: hello.CipherSuites,
 			}
 			cert, err := config.GetCertificate(h)
 			if err == nil {
-				return utls.ToUTLSCertificate(cert), nil
+				return htls.ToHTLSCertificate(cert), nil
 			}
 			// get the certificate with the first domain name
 			// for defense the active detection
@@ -41,16 +41,16 @@ func newUTLSListener(listener net.Listener, config *tls.Config, secret []byte) *
 			if err != nil {
 				return nil, err
 			}
-			return utls.ToUTLSCertificate(cert), nil
+			return htls.ToHTLSCertificate(cert), nil
 		}
 		cfg.GetCertificate = wrapper
 	}
 	if len(config.Certificates) > 0 {
-		cert := *utls.ToUTLSCertificate(&config.Certificates[0])
-		cfg.Certificates = []utls.Certificate{cert}
+		cert := *htls.ToHTLSCertificate(&config.Certificates[0])
+		cfg.Certificates = []htls.Certificate{cert}
 	}
 	cfg.NextProtos = tlsNextProtos
-	ul := utlsListener{
+	ul := htlsListener{
 		Listener: listener,
 		config:   cfg,
 		secret:   secret,
@@ -58,14 +58,14 @@ func newUTLSListener(listener net.Listener, config *tls.Config, secret []byte) *
 	return &ul
 }
 
-func (ul *utlsListener) Accept() (net.Conn, error) {
+func (ul *htlsListener) Accept() (net.Conn, error) {
 	conn, err := ul.Listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	uc := &utlsConn{}
+	uc := &htlsConn{}
 	cfg := ul.config.Clone()
-	cfg.OnClientHelloMessage = func(hello *utls.ClientHelloMessage) error {
+	cfg.OnClientHelloMessage = func(hello *htls.ClientHelloMessage) error {
 		h := sha256.New()
 		h.Write(hello.Random)
 		h.Write(ul.secret)
@@ -74,12 +74,12 @@ func (ul *utlsListener) Accept() (net.Conn, error) {
 		}
 		return nil
 	}
-	uc.Conn = utls.Server(conn, cfg)
+	uc.Conn = htls.Server(conn, cfg)
 	return uc, nil
 }
 
-type utlsConn struct {
-	*utls.Conn
+type htlsConn struct {
+	*htls.Conn
 
 	covert bool
 }
