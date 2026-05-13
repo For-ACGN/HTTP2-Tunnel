@@ -18,7 +18,7 @@ const (
 	cliWindowUpdateSize = streamHeaderSize + 4
 	cliAcknowledgeSize  = streamHeaderSize
 
-	srvSettingsSize     = streamHeaderSize + 30
+	srvSettingsSize     = streamHeaderSize + 36
 	srvAcknowledgeSize  = streamHeaderSize
 	srvWindowUpdateSize = streamHeaderSize + 4
 )
@@ -30,6 +30,9 @@ func simulateHTTP2Client(conn net.Conn, preface []byte) error {
 		preface = []byte(http2.ClientPreface)
 	}
 
+	// simulate process preface and header
+	time.Sleep(time.Duration(140+rand.Intn(10+rand.Intn(40))) * time.Microsecond)
+
 	// write preface, settings, window update in one tls record
 	buffer := bytes.NewBuffer(make([]byte, 0, len(preface)+64))
 	buffer.Write(preface)
@@ -39,6 +42,9 @@ func simulateHTTP2Client(conn net.Conn, preface []byte) error {
 	if err != nil {
 		return err
 	}
+
+	// simulate process header
+	time.Sleep(time.Duration(48) * time.Microsecond)
 
 	// write headers and window update
 	size := 384 + int(binary.BigEndian.Uint32(preface)%256)
@@ -102,20 +108,22 @@ func simulateHTTP2Server(conn net.Conn, preface []byte) error {
 		return err
 	}
 
-	// send server settings // TODO + 6 (jitter) - 2 buf size
-	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvSettingsSize))
+	// prepare data before write
+	set := bytes.Repeat([]byte{0x00}, srvSettingsSize)
+	acw := bytes.Repeat([]byte{0x00}, srvAcknowledgeSize+srvWindowUpdateSize)
+	// send server settings
+	_, err = conn.Write(set)
 	if err != nil {
 		return err
 	}
-
 	// send server acknowledge and window update
-	_, err = conn.Write(bytes.Repeat([]byte{0x00}, srvAcknowledgeSize+srvWindowUpdateSize))
+	_, err = conn.Write(acw)
 	if err != nil {
 		return err
 	}
 
 	// simulate process header
-	time.Sleep(time.Duration(1+rand.Intn(2)) * time.Millisecond)
+	time.Sleep(time.Duration(1200+rand.Intn(1000+rand.Intn(1000))) * time.Microsecond)
 
 	// send processed header
 	size = 64 + int(binary.BigEndian.Uint32(preface)%256)
@@ -153,7 +161,7 @@ func simulateHTTP2Server(conn net.Conn, preface []byte) error {
 
 func sendPaddingDataBlock(conn net.Conn, size int) error {
 	buf := bytes.NewBuffer(make([]byte, 0, 2+size))
-	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(size)))
+	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(size))) // #nosec G115
 	buf.Write(bytes.Repeat([]byte{0x00}, size))
 	_, err := buf.WriteTo(conn)
 	return err
