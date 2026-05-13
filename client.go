@@ -32,6 +32,12 @@ const (
 	defaultClientTimeout = 10 * time.Second
 )
 
+const (
+	watcherBehaviorSleep = iota
+	watcherBehaviorPing
+	watcherBehaviorKill
+)
+
 // Client is a SoH client with SOCKS4, SOCKS5 and HTTP proxy server.
 type Client struct {
 	logger *logger
@@ -179,7 +185,7 @@ func (c *Client) Login() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to create request for login")
 	}
-	garbage := make([]byte, 4096+newMathRand().Intn(16*1024))
+	garbage := make([]byte, 128+newMathRand().Intn(256))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
@@ -197,7 +203,10 @@ func (c *Client) Login() error {
 	if resp.StatusCode != http.StatusOK {
 		return errors.Errorf("login failed with status: %s", resp.Status)
 	}
-	// send to the pre connection channel
+	// send to the pre-connection channel
+	if c.preConns == 0 {
+		return nil
+	}
 	select {
 	case c.connCh <- conn:
 		success = true
@@ -218,7 +227,7 @@ func (c *Client) Logout() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to create request for logout")
 	}
-	garbage := make([]byte, 4096+newMathRand().Intn(16*1024))
+	garbage := make([]byte, 128+newMathRand().Intn(256))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
@@ -250,6 +259,11 @@ func (c *Client) Serve() error {
 	for i := 0; i < num; i++ {
 		c.wg.Add(1)
 		go c.connector()
+	}
+	// start pre-connection watcher
+	for i := 0; i < c.preConns+2; i++ {
+		c.wg.Add(1)
+		go c.watcher()
 	}
 	c.logger.Infof("front proxy server listening on %s", c.frontListener.Addr())
 	var tempDelay time.Duration
@@ -412,7 +426,7 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create request for connect")
 	}
-	garbage := make([]byte, 256+newMathRand().Intn(4*1024))
+	garbage := make([]byte, 128+newMathRand().Intn(512))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Public-Key", hex.EncodeToString(clientPub))
@@ -561,6 +575,114 @@ func (c *Client) connector() {
 	}
 }
 
+func (c *Client) watcher() {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Fatal("watcher", r)
+		}
+		c.wg.Done()
+	}()
+	if c.preConns == 0 {
+		return
+	}
+	mRand := newMathRand()
+	for {
+		// sleep and check client is closed
+		delay := time.Duration(1000+mRand.Intn(3000+mRand.Intn(10000))) * time.Millisecond
+		select {
+		case <-time.After(delay):
+		case <-c.ctx.Done():
+			return
+		}
+		// get preconnection connection
+		var conn net.Conn
+		select {
+		case conn = <-c.connCh:
+		case <-c.ctx.Done():
+			return
+		}
+		// select behavior
+		var behavior int
+		switch mRand.Intn(10) {
+		case 0, 1, 2:
+			behavior = watcherBehaviorPing
+		case 3:
+			behavior = watcherBehaviorKill
+		default:
+			behavior = watcherBehaviorSleep
+		}
+		if !c.watchConn(conn, behavior) {
+			_ = conn.Close()
+			continue
+		}
+		// push to the connection channel
+		select {
+		case c.connCh <- conn:
+		case <-c.ctx.Done():
+			_ = conn.Close()
+			return
+		}
+	}
+}
+
+func (c *Client) watchConn(conn net.Conn, behavior int) bool {
+	switch behavior {
+	case watcherBehaviorPing:
+		err := c.ping(conn)
+		if err != nil {
+			c.logger.Warning("failed to ping connection:", err)
+			return false
+		}
+		return true
+	case watcherBehaviorKill:
+		return false
+	case watcherBehaviorSleep:
+		select {
+		case <-time.After(time.Second):
+			return true
+		case <-c.ctx.Done():
+			return false
+		}
+	default:
+		panic("invalid behavior")
+	}
+}
+
+func (c *Client) ping(conn net.Conn) error {
+	// apply timeout
+	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	// build and send ping request
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.buildURL("ping"), nil)
+	if err != nil {
+		return errors.Wrap(err, "failed to create request for ping")
+	}
+	garbage := make([]byte, 64+newMathRand().Intn(512))
+	header := req.Header
+	header.Set("Pass-Hash", c.passHash)
+	header.Set("Obfuscation", hex.EncodeToString(garbage))
+	err = req.Write(conn)
+	if err != nil {
+		return errors.Wrap(err, "failed to send request for ping")
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		return errors.Wrap(err, "failed to read response about ping")
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return errors.Errorf("invalid response status: %s", resp.Status)
+	}
+	if resp.Header.Get("Pong") != "Ping-Pong" {
+		return errors.New("invalid server response about ping")
+	}
+	// reset deadline
+	_ = conn.SetDeadline(time.Time{})
+	return nil
+}
+
 func (c *Client) buildDialer() *net.Dialer {
 	if runtime.GOOS != "android" {
 		return new(net.Dialer)
@@ -641,7 +763,7 @@ func (c *Client) preconnect() (net.Conn, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create request for preconnect")
 	}
-	garbage := make([]byte, 512+newMathRand().Intn(4*1024))
+	garbage := make([]byte, 128+newMathRand().Intn(256))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
