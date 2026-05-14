@@ -56,18 +56,43 @@ func main() {
 	client, err := msocks.NewClient(&config)
 	checkError(err)
 
-	// client.Login() will use 3-RTT, the time is similar as
-	// connect latency when connect a target with HTTPS(TLS 1.3)
-	now := time.Now()
-	err = client.Login()
-	checkError(err)
-	latency := time.Since(now).Milliseconds()
-	logger := log.New(os.Stdout, "", log.LstdFlags)
-	logger.Printf("[info] connect latency: %dms\n", latency)
+	// check the server can be reached
+	var reached bool
+	for i := 0; i < 3; i++ {
+		err = client.Check()
+		if err != nil {
+			fmt.Println(err)
+			continue
+		} else {
+			reached = true
+			break
+		}
+	}
+	if !reached {
+		fmt.Println("the server cannot be reached")
+		err = client.Close()
+		checkError(err)
+		return
+	}
 
+	// start core workers
 	go func() {
 		err := client.Serve()
 		checkError(err)
+	}()
+
+	// give some time for the connector
+	time.Sleep(time.Second)
+
+	// client.Login() will use 3-RTT, the time is similar as
+	// connect latency when connect a target with HTTPS(TLS 1.3)
+	go func() {
+		now := time.Now()
+		err = client.Login()
+		checkError(err)
+		latency := time.Since(now).Milliseconds()
+		logger := log.New(os.Stdout, "", log.LstdFlags)
+		logger.Printf("[info] connect latency: %dms\n", latency)
 	}()
 
 	signalCh := make(chan os.Signal, 1)
