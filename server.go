@@ -282,8 +282,19 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	garbage := make([]byte, 512+newMathRand().Intn(32*1024))
-	header := w.Header()
+	header := r.Header
+	ma, err := strconv.Atoi(header.Get("Min-Size"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	mb, err := strconv.Atoi(header.Get("Max-Size"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	garbage := make([]byte, ma+newMathRand().Intn(mb))
+	header = w.Header()
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
 	header.Set("Pong", "Ping-Pong")
 	w.WriteHeader(http.StatusOK)
@@ -406,7 +417,7 @@ func (s *Server) negotiate(r *http.Request) ([]byte, []byte, error) {
 	}
 	if len(clientPub) != curve25519.ScalarSize {
 		s.logger.Error("receive invalid public key from:", r.RemoteAddr)
-		return nil, nil, err // TODO fix bug
+		return nil, nil, errors.New("invalid public key size")
 	}
 	// process key exchange
 	serverPri := make([]byte, curve25519.ScalarSize)
