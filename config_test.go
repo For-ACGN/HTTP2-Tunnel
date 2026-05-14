@@ -1,4 +1,4 @@
-package msocks
+package h2tunnel
 
 import (
 	"crypto/sha256"

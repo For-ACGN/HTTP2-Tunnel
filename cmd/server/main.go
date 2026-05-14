@@ -48,7 +48,7 @@ func main() {
 	decoder := toml.NewDecoder(bytes.NewReader(cfgData))
 	decoder.DisallowUnknownFields()
 
-	var config msocks.ServerConfig
+	var config h2tunnel.ServerConfig
 	err = decoder.Decode(&config)
 	checkError(err)
 
@@ -57,7 +57,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	server, err := msocks.NewServer(ctx, &config)
+	server, err := h2tunnel.NewServer(ctx, &config)
 	checkError(err)
 	go func() {
 		err := server.Serve()

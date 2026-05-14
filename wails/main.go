@@ -2,10 +2,13 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"log"
 	"time"
 	
 	"github.com/wailsapp/wails/v3/pkg/application"
+	
+	"github.com/For-ACGN/MIX-Socks"
 )
 
 // Wails uses Go's `embed` package to embed the ui files into the binary.
@@ -13,14 +16,13 @@ import (
 // made available to the ui.
 // See https://pkg.go.dev/embed for more information.
 
-//go:embed all:ui/dist
+//go:embed all:webui/dist
 var assets embed.FS
 
 // main function serves as the application's entry point. It initializes the application, creates a window,
 // and starts a goroutine that emits a time-based event every second. It subsequently runs the application and
 // logs any error that might occur.
 func main() {
-	
 	// Create a new Wails application by providing the necessary options.
 	// Variables 'Name' and 'Description' are for application metadata.
 	// 'Assets' configures the asset server with the 'FS' variable pointing to the ui files.
@@ -66,6 +68,8 @@ func main() {
 			time.Sleep(time.Second)
 		}
 	}()
+	
+	fmt.Println(h2tunnel.TLSModeACME)
 	
 	// Run the application. This blocks until the application has been exited.
 	err := app.Run()

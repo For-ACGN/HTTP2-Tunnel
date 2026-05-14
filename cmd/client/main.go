@@ -40,7 +40,7 @@ func main() {
 	decoder := toml.NewDecoder(bytes.NewReader(cfgData))
 	decoder.DisallowUnknownFields()
 
-	var config msocks.ClientConfig
+	var config h2tunnel.ClientConfig
 	err = decoder.Decode(&config)
 	checkError(err)
 
@@ -53,7 +53,7 @@ func main() {
 	}
 
 	// create client from config
-	client, err := msocks.NewClient(&config)
+	client, err := h2tunnel.NewClient(&config)
 	checkError(err)
 
 	// check the server can be reached
