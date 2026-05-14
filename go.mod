@@ -10,11 +10,10 @@ require (
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/crypto v0.51.0
+	golang.org/x/net v0.54.0
 
-	golang.org/x/crypto v0.50.0
-	golang.org/x/net v0.53.0
-
-	github.com/For-ACGN/htls v0.0.0-20260512054901-9747c098e8db
+	github.com/For-ACGN/htls v0.0.0-20260513074956-b0f87ef33178
 )
 
 require (
@@ -22,7 +21,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
