@@ -35,6 +35,7 @@ const (
 const (
 	watcherBehaviorSleep = iota
 	watcherBehaviorPing
+	watcherBehaviorBrowse
 	watcherBehaviorKill
 )
 
@@ -164,8 +165,20 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	return &client, nil
 }
 
-func (c *Client) buildURL(path string) string {
-	return fmt.Sprintf("https://%s/%s/%s", c.serverAddr, c.pathHash, path)
+// Check is used to check the server can be reached.
+func (c *Client) Check() error {
+	conn, err := c.dial()
+	if err != nil {
+		return errors.Wrap(err, "failed to connect to server")
+	}
+	// send to the pre-connection channel even if it is disabled
+	select {
+	case c.connCh <- conn:
+		return nil
+	case <-c.ctx.Done():
+		_ = conn.Close()
+		return c.ctx.Err()
+	}
 }
 
 // Login is used to log in to server.
@@ -203,10 +216,7 @@ func (c *Client) Login() error {
 	if resp.StatusCode != http.StatusOK {
 		return errors.Errorf("login failed with status: %s", resp.Status)
 	}
-	// send to the pre-connection channel
-	if c.preConns == 0 {
-		return nil
-	}
+	// send to the pre-connection channel even if it is disabled
 	select {
 	case c.connCh <- conn:
 		success = true
@@ -246,6 +256,10 @@ func (c *Client) Logout() error {
 		return errors.Errorf("logout failed with status: %s", resp.Status)
 	}
 	return nil
+}
+
+func (c *Client) buildURL(path string) string {
+	return fmt.Sprintf("https://%s/%s/%s", c.serverAddr, c.pathHash, path)
 }
 
 func (c *Client) shuttingDown() bool {
@@ -348,8 +362,8 @@ func (c *Client) handleConn(conn net.Conn) {
 		// not append connection history to the log file
 		lg, _ := newLogger("")
 		lg.Infof(
-			"{%s} <%s> connect %s (%dms)", tun.Protocol, tun.IPType, tun.Address,
-			tun.Elapsed.Milliseconds(),
+			"{%s} <%s> [%dms] connect %s",
+			tun.Protocol, tun.IPType, tun.Elapsed.Milliseconds(), tun.Address,
 		)
 
 		var (
@@ -588,9 +602,9 @@ func (c *Client) watcher() {
 	mRand := newMathRand()
 	for {
 		// sleep and check client is closed
-		delay := time.Duration(1000+mRand.Intn(3000+mRand.Intn(10000))) * time.Millisecond
+		delay := 2000 + mRand.Intn(5000+mRand.Intn(10000))
 		select {
-		case <-time.After(delay):
+		case <-time.After(time.Duration(delay) * time.Millisecond):
 		case <-c.ctx.Done():
 			return
 		}
@@ -607,6 +621,8 @@ func (c *Client) watcher() {
 		case 0, 1, 2:
 			behavior = watcherBehaviorPing
 		case 3:
+			behavior = watcherBehaviorBrowse
+		case 9:
 			behavior = watcherBehaviorKill
 		default:
 			behavior = watcherBehaviorSleep
@@ -628,9 +644,27 @@ func (c *Client) watcher() {
 func (c *Client) watchConn(conn net.Conn, behavior int) bool {
 	switch behavior {
 	case watcherBehaviorPing:
-		err := c.ping(conn)
+		err := c.ping(conn, 4, 256)
 		if err != nil {
 			c.logger.Warning("failed to ping connection:", err)
+			return false
+		}
+		return true
+	case watcherBehaviorBrowse:
+		var maxResp int
+		switch newMathRand().Intn(10) {
+		case 0, 1, 2:
+			maxResp = 192 * 1024
+		case 3:
+			maxResp = 256 * 1024
+		case 4:
+			maxResp = 512 * 1024
+		default:
+			maxResp = 128 * 1024
+		}
+		err := c.ping(conn, 1024, maxResp)
+		if err != nil {
+			c.logger.Warning("failed to simulate browse:", err)
 			return false
 		}
 		return true
@@ -638,7 +672,7 @@ func (c *Client) watchConn(conn net.Conn, behavior int) bool {
 		return false
 	case watcherBehaviorSleep:
 		select {
-		case <-time.After(time.Second):
+		case <-time.After(3 * time.Second):
 			return true
 		case <-c.ctx.Done():
 			return false
@@ -648,7 +682,7 @@ func (c *Client) watchConn(conn net.Conn, behavior int) bool {
 	}
 }
 
-func (c *Client) ping(conn net.Conn) error {
+func (c *Client) ping(conn net.Conn, min, max int) error {
 	// apply timeout
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 	// build and send ping request
@@ -656,10 +690,12 @@ func (c *Client) ping(conn net.Conn) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to create request for ping")
 	}
-	garbage := make([]byte, 64+newMathRand().Intn(512))
+	garbage := make([]byte, 64+newMathRand().Intn(4*1024))
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
+	header.Set("Min-Size", strconv.Itoa(min))
+	header.Set("Max-Size", strconv.Itoa(max))
 	err = req.Write(conn)
 	if err != nil {
 		return errors.Wrap(err, "failed to send request for ping")
@@ -767,6 +803,8 @@ func (c *Client) preconnect() (net.Conn, error) {
 	header := req.Header
 	header.Set("Pass-Hash", c.passHash)
 	header.Set("Obfuscation", hex.EncodeToString(garbage))
+	header.Set("Min-Size", "512")
+	header.Set("Max-Size", "32768")
 	err = req.Write(conn)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to send request for preconnect")
