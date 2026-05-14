@@ -1,8 +1,10 @@
 package h2tunnel
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"sync"
 
@@ -20,7 +22,17 @@ type htlsListener struct {
 }
 
 func newHTLSListener(listener net.Listener, config *tls.Config, secret []byte) *htlsListener {
-	cfg := &htls.Config{}
+	cfg := &htls.Config{
+		NextProtos: tlsNextProtos,
+	}
+	// prepare the session tick key
+	var stk [32]byte
+	_, err := rand.Read(stk[:])
+	if err != nil {
+		panic(fmt.Sprintf("failed to generate session ticket key: %s", err))
+	}
+	cfg.SetSessionTicketKeys([][32]byte{stk})
+	// prepare the methods about provide certificate
 	if config.GetCertificate != nil {
 		wrapper := func(hello *htls.ClientHelloInfo) (*htls.Certificate, error) {
 			h := &tls.ClientHelloInfo{
@@ -49,7 +61,6 @@ func newHTLSListener(listener net.Listener, config *tls.Config, secret []byte) *
 		cert := *htls.ToHTLSCertificate(&config.Certificates[0])
 		cfg.Certificates = []htls.Certificate{cert}
 	}
-	cfg.NextProtos = tlsNextProtos
 	ul := htlsListener{
 		Listener: listener,
 		config:   cfg,
