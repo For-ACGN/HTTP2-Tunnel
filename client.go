@@ -121,6 +121,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		}
 		tlsConfig.RootCAs = certPool
 	}
+	tlsConfig.ClientSessionCache = utls.NewLRUClientSessionCache(64)
 	// prepare the front server listener
 	listener, err := net.Listen(config.Front.Network, config.Front.Address)
 	if err != nil {
@@ -747,9 +748,10 @@ func (c *Client) dial() (net.Conn, error) {
 	}
 	serverName := c.serverAddr[:colonPos]
 	tlsConfig := &utls.Config{
-		ServerName: serverName,
-		RootCAs:    c.tlsConfig.RootCAs,
-		NextProtos: tlsNextProtos,
+		ServerName:         serverName,
+		RootCAs:            c.tlsConfig.RootCAs,
+		ClientSessionCache: c.tlsConfig.ClientSessionCache,
+		NextProtos:         tlsNextProtos,
 	}
 	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
 	// set secret random value
