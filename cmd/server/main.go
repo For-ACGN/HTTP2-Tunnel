@@ -13,7 +13,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/For-ACGN/MIX-Socks"
+	"github.com/For-ACGN/HTTP2-Tunnel"
 )
 
 var (
@@ -59,6 +59,14 @@ func main() {
 	defer cancel()
 	server, err := h2tunnel.NewServer(ctx, &config)
 	checkError(err)
+
+	fmt.Println("calculate certificate public key hash")
+	list, err := server.CertPinning(ctx)
+	checkError(err)
+	for _, item := range list {
+		fmt.Printf("%X\n", item)
+	}
+
 	go func() {
 		err := server.Serve()
 		checkError(err)
