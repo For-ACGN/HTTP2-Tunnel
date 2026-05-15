@@ -62,10 +62,11 @@ type tunnel struct {
 	smu sync.Mutex
 
 	// context data
-	Protocol string
-	IPType   string
-	Address  string
-	Elapsed  time.Duration
+	Protocol  string
+	IPType    string
+	Address   string
+	Elapsed   time.Duration
+	Establish time.Time
 }
 
 func newClientTunnel(conn net.Conn, key []byte, jitter int) (*tunnel, error) {
