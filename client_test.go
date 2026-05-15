@@ -36,6 +36,7 @@ func testBuildClientConfig() *ClientConfig {
 	config.Server.Network = "tcp4"
 	config.Server.Address = "localhost:2019"
 	config.Server.RootCA = string(ca)
+	config.Server.CertPin = []string{"2DE2FF137B4B825A511B52C9CCD6CB4DC3F4676A7F6E1EB3F2AE8C30FFA09640"}
 	config.Front.Network = "tcp"
 	config.Front.Address = "127.0.0.1:2020"
 	return &config
@@ -47,7 +48,6 @@ func TestNewClient(t *testing.T) {
 	config := testBuildClientConfig()
 	client, err := NewClient(config)
 	require.NoError(t, err)
-	require.NotNil(t, client)
 
 	err = client.Close()
 	require.NoError(t, err)
@@ -71,7 +71,6 @@ func TestClient_Login(t *testing.T) {
 	clientCfg := testBuildClientConfig()
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	require.NotNil(t, client)
 
 	err = client.Login()
 	require.NoError(t, err)
@@ -101,7 +100,6 @@ func TestClient_Logout(t *testing.T) {
 	clientCfg := testBuildClientConfig()
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	require.NotNil(t, client)
 
 	err = client.Logout()
 	require.NoError(t, err)
@@ -131,7 +129,6 @@ func TestClient_Serve(t *testing.T) {
 	clientCfg := testBuildClientConfig()
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	require.NotNil(t, client)
 
 	go func() {
 		err := client.Serve()
@@ -148,8 +145,10 @@ func TestClient_Serve(t *testing.T) {
 	}
 	resp, err := httpClient.Get("https://github.com/")
 	require.NoError(t, err)
+
 	data, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
+	require.Equal(t, "HTTP/2.0", resp.Proto)
 	t.Log(len(data))
 	t.Log(string(data))
 
@@ -228,7 +227,6 @@ func TestClient_connect(t *testing.T) {
 	clientCfg.Client.PreConns = 1
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	require.NotNil(t, client)
 
 	go func() {
 		err := client.Serve()
