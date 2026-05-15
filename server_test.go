@@ -34,7 +34,8 @@ func testBuildServerConfig() *ServerConfig {
 	config.TLS.Mode = TLSModeStatic
 	config.TLS.Static.Cert = "testdata/server_cert.pem"
 	config.TLS.Static.Key = "testdata/server_key.pem"
-	config.Web.Directory = "cmd/server/web"
+	config.Web.Mode = WebModeStatic
+	config.Web.Static.Directory = "cmd/server/web"
 	return &config
 }
 
@@ -44,7 +45,22 @@ func TestNewServer(t *testing.T) {
 	config := testBuildServerConfig()
 	server, err := NewServer(context.Background(), config)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
+	err = server.Close()
+	require.NoError(t, err)
+}
+
+func TestServer_CertPinning(t *testing.T) {
+	defer testRemoveServerLogFile(t)
+
+	config := testBuildServerConfig()
+	server, err := NewServer(context.Background(), config)
+	require.NoError(t, err)
+
+	list, err := server.CertPinning(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	fmt.Printf("%X\n", list[0])
 
 	err = server.Close()
 	require.NoError(t, err)
@@ -56,7 +72,6 @@ func TestServer_Serve(t *testing.T) {
 	config := testBuildServerConfig()
 	server, err := NewServer(context.Background(), config)
 	require.NoError(t, err)
-	require.NotNil(t, server)
 
 	go func() {
 		err := server.Serve()
@@ -78,7 +93,6 @@ func TestServer_handleConn(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
 	address := serverCfg.HTTP.Address
 
 	go func() {
@@ -139,7 +153,6 @@ func TestServer_Simulation(t *testing.T) {
 	config := testBuildServerConfig()
 	server, err := NewServer(context.Background(), config)
 	require.NoError(t, err)
-	require.NotNil(t, server)
 	address := config.HTTP.Address
 
 	go func() {
