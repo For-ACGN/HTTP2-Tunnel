@@ -69,9 +69,10 @@ type ClientConfig struct {
 	} `toml:"client"`
 
 	Server struct {
-		Network string `toml:"network"`
-		Address string `toml:"address"`
-		RootCA  string `toml:"root_ca"`
+		Network string   `toml:"network"`
+		Address string   `toml:"address"`
+		RootCA  string   `toml:"root_ca"`
+		CertPin []string `toml:"cert_pin"`
 	} `toml:"server"`
 
 	Front struct {
