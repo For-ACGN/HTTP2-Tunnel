@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +40,7 @@ const (
 	watcherBehaviorKill
 )
 
-// Client is a SoH client with SOCKS4, SOCKS5 and HTTP proxy server.
+// Client is a HTTP2-Tunnel client.
 type Client struct {
 	logger *logger
 
@@ -57,6 +58,7 @@ type Client struct {
 	serverNet  string
 	serverAddr string
 	tlsConfig  *utls.Config
+	certPin    []string
 
 	frontUsername string
 	frontPassword string
@@ -77,7 +79,7 @@ type Client struct {
 	wg     sync.WaitGroup
 }
 
-// NewClient is used to create SoH client.
+// NewClient is used to create a HTTP2-Tunnel client.
 func NewClient(config *ClientConfig) (*Client, error) {
 	logger, err := newLogger(config.Common.LogPath)
 	if err != nil {
@@ -108,7 +110,11 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		return nil, errors.Errorf("jitter level must be between 1 and %d", maximumJitterLevel)
 	}
 	// prepare tls config for client
-	tlsConfig := &utls.Config{}
+	tlsConfig := &utls.Config{
+		NextProtos:         tlsNextProtos,
+		ClientSessionCache: utls.NewLRUClientSessionCache(64),
+		OmitEmptyPsk:       true,
+	}
 	rootCA := config.Server.RootCA
 	if rootCA != "" {
 		certs, err := parseCertificatesPEM([]byte(rootCA))
@@ -121,7 +127,17 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		}
 		tlsConfig.RootCAs = certPool
 	}
-	tlsConfig.ClientSessionCache = utls.NewLRUClientSessionCache(64)
+	var certPin []string
+	for _, pin := range config.Server.CertPin {
+		b, err := hex.DecodeString(pin)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid server certificate pin")
+		}
+		if len(b) != sha256.Size {
+			return nil, errors.New("invalid server certificate pin format")
+		}
+		certPin = append(certPin, hex.EncodeToString(b))
+	}
 	// prepare the front server listener
 	listener, err := net.Listen(config.Front.Network, config.Front.Address)
 	if err != nil {
@@ -151,6 +167,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		serverNet:  config.Server.Network,
 		serverAddr: config.Server.Address,
 		tlsConfig:  tlsConfig,
+		certPin:    certPin,
 
 		frontUsername: config.Front.Username,
 		frontPassword: config.Front.Password,
@@ -168,9 +185,12 @@ func NewClient(config *ClientConfig) (*Client, error) {
 
 // Check is used to check the server can be reached.
 func (c *Client) Check() error {
-	conn, err := c.dial()
+	conn, hijacked, err := c.dial()
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to server")
+	}
+	if hijacked {
+		return errors.Wrap(err, "[!] detect attacker")
 	}
 	// send to the pre-connection channel even if it is disabled
 	select {
@@ -184,9 +204,12 @@ func (c *Client) Check() error {
 
 // Login is used to log in to server.
 func (c *Client) Login() error {
-	conn, err := c.dial()
+	conn, hijacked, err := c.dial()
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to server")
+	}
+	if hijacked {
+		return errors.Wrap(err, "[!] detect attacker")
 	}
 	var success bool
 	defer func() {
@@ -228,9 +251,12 @@ func (c *Client) Login() error {
 
 // Logout is used to log out to server.
 func (c *Client) Logout() error {
-	conn, err := c.dial()
+	conn, hijacked, err := c.dial()
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to server")
+	}
+	if hijacked {
+		return errors.Wrap(err, "[!] detect attacker")
 	}
 	defer func() { _ = conn.Close() }()
 	// build request about logout
@@ -736,58 +762,81 @@ func (c *Client) buildDialer() *net.Dialer {
 	return &net.Dialer{Resolver: resolver, Timeout: c.timeout}
 }
 
-func (c *Client) dial() (net.Conn, error) {
+func (c *Client) dial() (net.Conn, bool, error) {
 	dialer := c.buildDialer()
 	conn, err := dialer.DialContext(c.ctx, c.serverNet, c.serverAddr)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	colonPos := strings.LastIndex(c.serverAddr, ":")
 	if colonPos == -1 {
 		colonPos = len(c.serverAddr)
 	}
 	serverName := c.serverAddr[:colonPos]
-	tlsConfig := &utls.Config{
-		ServerName:         serverName,
-		RootCAs:            c.tlsConfig.RootCAs,
-		ClientSessionCache: c.tlsConfig.ClientSessionCache,
-		NextProtos:         tlsNextProtos,
-	}
+	tlsConfig := c.tlsConfig.Clone()
+	tlsConfig.ServerName = serverName
 	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
 	// set secret random value
 	err = uc.BuildHandshakeState()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var random []byte
 	select {
 	case random = <-c.randCh:
 	case <-c.ctx.Done():
-		return nil, c.ctx.Err()
+		return nil, false, c.ctx.Err()
 	}
 	err = uc.SetClientRandom(random)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// check the negotiated protocol
 	err = uc.Handshake()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if uc.ConnectionState().NegotiatedProtocol != "h2" {
-		return nil, errors.New("invalid negotiated protocol")
+	err = c.detect(uc)
+	if err != nil {
+		return nil, true, err
 	}
 	err = simulateHTTP2Client(uc, c.preface)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return uc, nil
+	return uc, false, nil
+}
+
+func (c *Client) detect(conn *utls.UConn) error {
+	state := conn.ConnectionState()
+	if state.NegotiatedProtocol != "h2" {
+		return errors.New("invalid negotiated protocol")
+	}
+	if state.Version != utls.VersionTLS13 {
+		return errors.New("invalid TLS version")
+	}
+	var pinned bool
+	for _, cert := range state.PeerCertificates {
+		hash := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+		s := hex.EncodeToString(hash[:])
+		if slices.Contains(c.certPin, s) {
+			pinned = true
+			break
+		}
+	}
+	if !pinned {
+		return errors.New("invalid public key in certificate")
+	}
+	return nil
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
-	conn, err := c.dial()
+	conn, hijacked, err := c.dial()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to server")
+	}
+	if hijacked {
+		return nil, errors.Wrap(err, "[!] detect attacker")
 	}
 	var success bool
 	defer func() {
@@ -849,7 +898,7 @@ func (c *Client) Close() error {
 			err = errors.Wrap(err, "failed to close front listener")
 		}
 	}
-	c.logger.Info("client is closed")
+	c.logger.Info("http2-tunnel client is closed")
 	_ = c.logger.Close()
 	return err
 }
