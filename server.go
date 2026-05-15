@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -42,7 +44,7 @@ const (
 	maximumRequestBody   = 8 * 1024 * 1024
 )
 
-// Server is a SOCKS-over-HTTPS server.
+// Server is a HTTP2-Tunnel server.
 type Server struct {
 	logger *logger
 
@@ -50,7 +52,9 @@ type Server struct {
 	preface    []byte
 	timeout    time.Duration
 	maxBufSize int
-	webMode    string
+
+	domains []string
+	webMode string
 
 	acl *autocert.Listener
 	cfg *tls.Config
@@ -64,7 +68,7 @@ type Server struct {
 	inShutdown atomic.Bool
 }
 
-// NewServer is used to create a SoH server.
+// NewServer is used to create a HTTP2-Tunnel server.
 func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	logger, err := newLogger(config.Common.LogPath)
 	if err != nil {
@@ -148,7 +152,9 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		preface:    preface,
 		timeout:    timeout,
 		maxBufSize: maxBufSize,
-		webMode:    config.Web.Mode,
+
+		domains: config.TLS.ACME.Domains,
+		webMode: config.Web.Mode,
 
 		acl: acl,
 		cfg: cfg,
@@ -441,6 +447,51 @@ func (s *Server) negotiate(r *http.Request) ([]byte, []byte, error) {
 
 func (s *Server) shuttingDown() bool {
 	return s.inShutdown.Load()
+}
+
+// CertPinning is used to calculate the certificate public key hash.
+func (s *Server) CertPinning(ctx context.Context) ([][]byte, error) {
+	if s.acl == nil {
+		cert := &s.cfg.Certificates[0]
+		hash, err := calcCertPublicKeyHash(cert)
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{hash}, nil
+	}
+	err := s.acl.Preprovision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var list [][]byte
+	for _, domain := range s.domains {
+		hello := &tls.ClientHelloInfo{
+			ServerName: domain,
+			CipherSuites: []uint16{
+				tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			},
+		}
+		cert, err := s.acl.GetCertificate(hello)
+		if err != nil {
+			return nil, err
+		}
+		hash, err := calcCertPublicKeyHash(cert)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, hash)
+	}
+	return list, nil
+}
+
+func calcCertPublicKeyHash(cert *tls.Certificate) ([]byte, error) {
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	return hash[:], nil
 }
 
 // Serve is used to start http server.
