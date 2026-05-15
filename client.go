@@ -415,7 +415,8 @@ func (c *Client) handleConn(conn net.Conn) {
 		wg.Wait()
 
 		lg.Infof(
-			"{%s} <%s> disconnect %s (%s/%s)", tun.Protocol, tun.IPType, tun.Address,
+			"{%s} <%s> [%s] disconnect %s (%s/%s)",
+			tun.Protocol, tun.IPType, fmtDuration(time.Since(tun.Establish)), tun.Address,
 			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
 			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
 		)
@@ -428,6 +429,19 @@ func (c *Client) handleConn(conn net.Conn) {
 		c.numRecv += numRecv
 	}()
 	success = true
+}
+
+func fmtDuration(d time.Duration) string {
+	var s string
+	switch {
+	case d < time.Second:
+		s = fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond))
+	case d < time.Minute:
+		s = fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
+	default:
+		s = fmt.Sprintf("%.1fm", float64(d)/float64(time.Minute))
+	}
+	return strings.TrimSuffix(s, ".0")
 }
 
 func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
@@ -514,10 +528,11 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 		return nil, errors.Wrap(err, "failed to create tunnel")
 	}
 	// record context data
-	tun.Elapsed = time.Since(now)
 	tun.Protocol = protocol
 	tun.IPType = ipType
 	tun.Address = address
+	tun.Elapsed = time.Since(now)
+	tun.Establish = time.Now()
 	return tun, nil
 }
 
@@ -798,6 +813,7 @@ func (c *Client) dial() (net.Conn, bool, error) {
 	}
 	err = c.detect(uc)
 	if err != nil {
+		c.mimic(uc)
 		return nil, true, err
 	}
 	err = simulateHTTP2Client(uc, c.preface)
@@ -828,6 +844,10 @@ func (c *Client) detect(conn *utls.UConn) error {
 		return errors.New("invalid public key in certificate")
 	}
 	return nil
+}
+
+func (c *Client) mimic(conn net.Conn) {
+	// TODO send request like firefox
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
