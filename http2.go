@@ -153,6 +153,16 @@ func simulateHTTP2Server(conn net.Conn, preface []byte) error {
 	return nil
 }
 
+func simulateHTTP2GoAway(conn net.Conn) error {
+	buf := bytes.NewBuffer(make([]byte, 0, 17))
+	buf.Write([]byte{0x00, 0x00, 0x08})        // length
+	buf.Write([]byte{0x07})                    // Go AWAY
+	buf.Write(bytes.Repeat([]byte{0x00}, 1+8)) // flags
+	buf.Write(bytes.Repeat([]byte{0x00}, 4))   // error
+	_, err := buf.WriteTo(conn)
+	return err
+}
+
 // +--------+---------+
 // |  size  | padding |
 // +--------+---------+
