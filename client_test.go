@@ -9,6 +9,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/For-ACGN/utls"
 	"github.com/stretchr/testify/require"
 )
 
@@ -136,9 +137,9 @@ func TestClient_Logout(t *testing.T) {
 	require.NoError(t, err)
 	err = client.Login()
 	require.NoError(t, err)
+
 	err = client.Logout()
 	require.NoError(t, err)
-
 	err = client.Close()
 	require.NoError(t, err)
 
@@ -164,6 +165,10 @@ func TestClient_Serve(t *testing.T) {
 	clientCfg := testBuildClientConfig()
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
+	err = client.Check()
+	require.NoError(t, err)
+	err = client.Login()
+	require.NoError(t, err)
 
 	go func() {
 		err := client.Serve()
@@ -187,6 +192,8 @@ func TestClient_Serve(t *testing.T) {
 	t.Log(len(data))
 	t.Log(string(data))
 
+	err = client.Logout()
+	require.NoError(t, err)
 	err = client.Close()
 	require.NoError(t, err)
 
@@ -213,6 +220,8 @@ func TestClient_DisablePreConn(t *testing.T) {
 	clientCfg.Client.PreConns = 0
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
+	err = client.Check()
+	require.NoError(t, err)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -236,6 +245,8 @@ func TestClient_DisablePreConn(t *testing.T) {
 	t.Log(len(data))
 	t.Log(string(data))
 
+	err = client.Logout()
+	require.NoError(t, err)
 	err = client.Close()
 	require.NoError(t, err)
 
@@ -262,6 +273,10 @@ func TestClient_connect(t *testing.T) {
 	clientCfg.Client.PreConns = 1
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
+	err = client.Check()
+	require.NoError(t, err)
+	err = client.Login()
+	require.NoError(t, err)
 
 	go func() {
 		err := client.Serve()
@@ -283,6 +298,8 @@ func TestClient_connect(t *testing.T) {
 	t.Log(len(data))
 	t.Log(string(data))
 
+	err = client.Logout()
+	require.NoError(t, err)
 	err = client.Close()
 	require.NoError(t, err)
 
@@ -291,5 +308,38 @@ func TestClient_connect(t *testing.T) {
 }
 
 func TestClient_mimic(t *testing.T) {
+	defer func() {
+		testRemoveClientLogFile(t)
+		testRemoveServerLogFile(t)
+	}()
 
+	serverCfg := testBuildServerConfig()
+	server, err := NewServer(context.Background(), serverCfg)
+	require.NoError(t, err)
+
+	go func() {
+		err := server.Serve()
+		require.NoError(t, err)
+	}()
+
+	clientCfg := testBuildClientConfig()
+	client, err := NewClient(clientCfg)
+	require.NoError(t, err)
+	err = client.Check()
+	require.NoError(t, err)
+	err = client.Login()
+	require.NoError(t, err)
+
+	conn, err := utls.Dial("tcp", clientCfg.Server.Address, client.tlsConfig)
+	require.NoError(t, err)
+	err = client.mimic(conn)
+	require.NoError(t, err)
+
+	err = client.Logout()
+	require.NoError(t, err)
+	err = client.Close()
+	require.NoError(t, err)
+
+	err = server.Close()
+	require.NoError(t, err)
 }
