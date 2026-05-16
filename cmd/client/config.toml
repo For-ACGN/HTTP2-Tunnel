@@ -1,15 +1,16 @@
 [common]
   password = "test"
-  log_path = "mix-socks.log"
+  log_path = "http2-tunnel.log"
 
 [client]
-  timeout   = "10s"
-  pre_conns = 32
+  timeout   = "15s"
+  pre_conns = 16
 
 [server]
-  network = "tcp"
-  address = "1.1.1.1:443"
-  root_ca = ""
+  network  = "tcp"
+  address  = "1.1.1.1:443"
+  root_ca  = ""  # ca file path
+  cert_pin = ["64-bytes-hex-string"]
 
 [front]
   network  = "tcp"
