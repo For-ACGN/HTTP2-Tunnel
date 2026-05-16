@@ -184,6 +184,39 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	return &client, nil
 }
 
+func (c *Client) buildURL(path string) string {
+	return fmt.Sprintf("https://%s/%s/%s", c.serverAddr, c.pathHash, path)
+}
+
+func (c *Client) shuttingDown() bool {
+	return c.inShutdown.Load()
+}
+
+func (c *Client) getConn() (net.Conn, error) {
+	// try to get connection from preconnect channel
+	select {
+	case conn := <-c.connCh:
+		return conn, nil
+	case <-c.ctx.Done():
+		return nil, c.ctx.Err()
+	default:
+	}
+	// if channel is empty(A large number of connections
+	// were used in a short period of time), connect at once
+	return c.preconnect()
+}
+
+func (c *Client) putConn(conn net.Conn) error {
+	select {
+	case c.connCh <- conn:
+		return nil
+	case <-c.ctx.Done():
+		_ = simulateHTTP2GoAway(conn)
+		_ = conn.Close()
+		return c.ctx.Err()
+	}
+}
+
 // Check is used to check the server can be reached.
 func (c *Client) Check() error {
 	conn, hijacked, err := c.dial()
@@ -191,26 +224,17 @@ func (c *Client) Check() error {
 		return errors.Wrap(err, "failed to connect to server")
 	}
 	if hijacked {
-		return errors.Wrap(err, "[!] detect attacker")
+		return errors.Errorf("[!] detect attacker [!] - %s", err)
 	}
 	// send to the pre-connection channel even if it is disabled
-	select {
-	case c.connCh <- conn:
-		return nil
-	case <-c.ctx.Done():
-		_ = conn.Close()
-		return c.ctx.Err()
-	}
+	return c.putConn(conn)
 }
 
 // Login is used to log in to server.
 func (c *Client) Login() error {
-	conn, hijacked, err := c.dial()
+	conn, err := c.getConn()
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to server")
-	}
-	if hijacked {
-		return errors.Wrap(err, "[!] detect attacker")
 	}
 	var success bool
 	defer func() {
@@ -242,22 +266,19 @@ func (c *Client) Login() error {
 		return errors.Errorf("login failed with status: %s", resp.Status)
 	}
 	// send to the pre-connection channel even if it is disabled
-	select {
-	case c.connCh <- conn:
-		success = true
-	case <-c.ctx.Done():
+	err = c.putConn(conn)
+	if err != nil {
+		return err
 	}
+	success = true
 	return nil
 }
 
 // Logout is used to log out to server.
 func (c *Client) Logout() error {
-	conn, hijacked, err := c.dial()
+	conn, err := c.getConn()
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to server")
-	}
-	if hijacked {
-		return errors.Wrap(err, "[!] detect attacker")
 	}
 	defer func() { _ = conn.Close() }()
 	// build request about logout
@@ -283,15 +304,7 @@ func (c *Client) Logout() error {
 	if resp.StatusCode != http.StatusOK {
 		return errors.Errorf("logout failed with status: %s", resp.Status)
 	}
-	return nil
-}
-
-func (c *Client) buildURL(path string) string {
-	return fmt.Sprintf("https://%s/%s/%s", c.serverAddr, c.pathHash, path)
-}
-
-func (c *Client) shuttingDown() bool {
-	return c.inShutdown.Load()
+	return simulateHTTP2GoAway(conn)
 }
 
 // Serve is used to start front server.
@@ -453,7 +466,7 @@ func formatDuration(d time.Duration) string {
 func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 	now := time.Now()
 	// get connection from preconnect
-	conn, err := c.getPreConn()
+	conn, err := c.getConn()
 	if err != nil {
 		return nil, err
 	}
@@ -542,20 +555,6 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 	return tun, nil
 }
 
-func (c *Client) getPreConn() (net.Conn, error) {
-	// try to get connection from preconnect channel
-	select {
-	case conn := <-c.connCh:
-		return conn, nil
-	case <-c.ctx.Done():
-		return nil, c.ctx.Err()
-	default:
-	}
-	// if channel is empty(A large number of connections
-	// were used in a short period of time), connect at once
-	return c.preconnect()
-}
-
 func (c *Client) generator() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -635,6 +634,56 @@ func (c *Client) connector() {
 			return
 		}
 	}
+}
+
+func (c *Client) preconnect() (net.Conn, error) {
+	conn, hijacked, err := c.dial()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to connect to server")
+	}
+	if hijacked {
+		return nil, errors.Errorf("[!] detect attacker [!] - %s", err)
+	}
+	var success bool
+	defer func() {
+		if !success {
+			_ = conn.Close()
+		}
+	}()
+	// apply timeout
+	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.buildURL("ping"), nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create request for preconnect")
+	}
+	garbage := make([]byte, 128+newMathRand().Intn(256))
+	header := req.Header
+	header.Set("Pass-Hash", c.passHash)
+	header.Set("Obfuscation", hex.EncodeToString(garbage))
+	header.Set("Min-Size", "512")
+	header.Set("Max-Size", "32768")
+	err = req.Write(conn)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to send request for preconnect")
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read response about preconnect")
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.Errorf("invalid response status: %s", resp.Status)
+	}
+	if resp.Header.Get("Pong") != "Ping-Pong" {
+		return nil, errors.New("invalid server response about ping")
+	}
+	// reset deadline
+	_ = conn.SetDeadline(time.Time{})
+	success = true
+	return conn, nil
 }
 
 func (c *Client) watcher() {
@@ -819,7 +868,7 @@ func (c *Client) dial() (net.Conn, bool, error) {
 	}
 	err = c.detect(uc)
 	if err != nil {
-		c.mimic(uc)
+		_ = c.mimic(uc)
 		return nil, true, err
 	}
 	err = simulateHTTP2Client(uc, c.preface)
@@ -852,7 +901,7 @@ func (c *Client) detect(conn *utls.UConn) error {
 	return nil
 }
 
-func (c *Client) mimic(conn net.Conn) {
+func (c *Client) mimic(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 
 	// TODO HTTP/2 handshake
@@ -889,69 +938,20 @@ func (c *Client) mimic(conn net.Conn) {
 		EndHeaders:    true,
 	})
 	if err != nil {
-		return
+		return err
 	}
 	// read and discard response
 	reader := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
 	if err != nil {
-		return
+		return err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
 	// send GOAWAY frame to close HTTP/2 connection gracefully
-	_ = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
-}
-
-func (c *Client) preconnect() (net.Conn, error) {
-	conn, hijacked, err := c.dial()
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to connect to server")
-	}
-	if hijacked {
-		return nil, errors.Wrap(err, "[!] detect attacker")
-	}
-	var success bool
-	defer func() {
-		if !success {
-			_ = conn.Close()
-		}
-	}()
-	// apply timeout
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.buildURL("ping"), nil)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create request for preconnect")
-	}
-	garbage := make([]byte, 128+newMathRand().Intn(256))
-	header := req.Header
-	header.Set("Pass-Hash", c.passHash)
-	header.Set("Obfuscation", hex.EncodeToString(garbage))
-	header.Set("Min-Size", "512")
-	header.Set("Max-Size", "32768")
-	err = req.Write(conn)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to send request for preconnect")
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to read response about preconnect")
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.Errorf("invalid response status: %s", resp.Status)
-	}
-	if resp.Header.Get("Pong") != "Ping-Pong" {
-		return nil, errors.New("invalid server response about ping")
-	}
-	// reset deadline
-	_ = conn.SetDeadline(time.Time{})
-	success = true
-	return conn, nil
+	_ = framer.WriteGoAway(0, http2.ErrCodeNo, nil) // TODO ? replace ?
+	return nil
 }
 
 // Close is used to close front server.
