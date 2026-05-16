@@ -23,7 +23,7 @@ func TestHTTP2Simulation(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
 	go func() {
 		err := server.Serve()
 		require.NoError(t, err)

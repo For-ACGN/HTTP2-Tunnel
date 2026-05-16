@@ -18,7 +18,6 @@ func TestHFS(t *testing.T) {
 	config := testBuildServerConfig()
 	server, err := NewServer(context.Background(), config)
 	require.NoError(t, err)
-	require.NotNil(t, server)
 
 	go func() {
 		err := server.Serve()

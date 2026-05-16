@@ -31,7 +31,6 @@ func TestReverseProxy(t *testing.T) {
 	config.Web.Proxy.Filter = []string{"filtered_header"}
 	server, err := NewServer(context.Background(), config)
 	require.NoError(t, err)
-	require.NotNil(t, server)
 
 	go func() {
 		err := server.Serve()

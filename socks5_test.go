@@ -22,7 +22,7 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -31,7 +31,6 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		clientCfg := testBuildClientConfig()
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -69,7 +68,7 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -80,7 +79,6 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -117,7 +115,7 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -129,7 +127,6 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -169,7 +166,7 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -181,7 +178,6 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -216,7 +212,7 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -228,7 +224,6 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()

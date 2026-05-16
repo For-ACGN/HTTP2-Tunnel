@@ -22,7 +22,7 @@ func TestHTTPProxy_ServeHTTPConnect(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -31,7 +31,6 @@ func TestHTTPProxy_ServeHTTPConnect(t *testing.T) {
 		clientCfg := testBuildClientConfig()
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -69,7 +68,7 @@ func TestHTTPProxy_ServeHTTPConnect(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -80,7 +79,6 @@ func TestHTTPProxy_ServeHTTPConnect(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -117,7 +115,7 @@ func TestHTTPProxy_ServeHTTPForward(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -126,7 +124,6 @@ func TestHTTPProxy_ServeHTTPForward(t *testing.T) {
 		clientCfg := testBuildClientConfig()
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -164,7 +161,7 @@ func TestHTTPProxy_ServeHTTPForward(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -175,7 +172,6 @@ func TestHTTPProxy_ServeHTTPForward(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -215,7 +211,7 @@ func TestHTTPProxy_Authenticate(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -227,7 +223,6 @@ func TestHTTPProxy_Authenticate(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
@@ -267,7 +262,7 @@ func TestHTTPProxy_Authenticate(t *testing.T) {
 		serverCfg := testBuildServerConfig()
 		server, err := NewServer(context.Background(), serverCfg)
 		require.NoError(t, err)
-		require.NotNil(t, server)
+
 		go func() {
 			err := server.Serve()
 			require.NoError(t, err)
@@ -279,7 +274,6 @@ func TestHTTPProxy_Authenticate(t *testing.T) {
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
-		require.NotNil(t, client)
 
 		go func() {
 			err := client.Serve()
