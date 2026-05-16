@@ -13,7 +13,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/For-ACGN/MIX-Socks"
+	"github.com/For-ACGN/HTTP2-Tunnel"
 )
 
 var (
@@ -57,11 +57,12 @@ func main() {
 	checkError(err)
 
 	// check the server can be reached
+	lg := log.New(os.Stdout, "", log.LstdFlags)
 	var reached bool
 	for i := 0; i < 3; i++ {
 		err = client.Check()
 		if err != nil {
-			fmt.Println(err)
+			lg.Println("[error]", err)
 			continue
 		} else {
 			reached = true
@@ -69,7 +70,7 @@ func main() {
 		}
 	}
 	if !reached {
-		fmt.Println("the server cannot be reached")
+		lg.Println("[error] the server cannot be reached")
 		err = client.Close()
 		checkError(err)
 		return
