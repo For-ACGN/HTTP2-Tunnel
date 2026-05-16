@@ -26,6 +26,7 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/hpack"
 )
 
 const (
@@ -416,7 +417,7 @@ func (c *Client) handleConn(conn net.Conn) {
 
 		lg.Infof(
 			"{%s} <%s> [%s] disconnect %s (%s/%s)",
-			tun.Protocol, tun.IPType, fmtDuration(time.Since(tun.Establish)), tun.Address,
+			tun.Protocol, tun.IPType, formatDuration(time.Since(tun.Establish)), tun.Address,
 			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
 			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
 		)
@@ -431,17 +432,22 @@ func (c *Client) handleConn(conn net.Conn) {
 	success = true
 }
 
-func fmtDuration(d time.Duration) string {
+func formatDuration(d time.Duration) string {
 	var s string
 	switch {
 	case d < time.Second:
-		s = fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond))
+		m := d.Milliseconds()
+		if m > 0 {
+			s = fmt.Sprintf("%dms", m)
+		} else {
+			s = "-"
+		}
 	case d < time.Minute:
 		s = fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
 	default:
 		s = fmt.Sprintf("%.1fm", float64(d)/float64(time.Minute))
 	}
-	return strings.TrimSuffix(s, ".0")
+	return strings.ReplaceAll(s, ".0", "")
 }
 
 func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
@@ -847,7 +853,55 @@ func (c *Client) detect(conn *utls.UConn) error {
 }
 
 func (c *Client) mimic(conn net.Conn) {
-	// TODO send request like firefox
+	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+
+	// TODO HTTP/2 handshake
+
+	// encode headers with firefox order
+	var buf bytes.Buffer
+	enc := hpack.NewEncoder(&buf)
+	wh := func(name, value string) {
+		_ = enc.WriteField(hpack.HeaderField{Name: name, Value: value})
+	}
+	// pseudo-headers first (firefox order)
+	wh(":method", "GET")
+	wh(":path", "/")
+	wh(":authority", c.serverAddr)
+	wh(":scheme", "https")
+	// firefox specific header order
+	wh("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
+	wh("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	wh("accept-language", "zh-CN,zh;q=0.9,zh-TW;q=0.8,zh-HK;q=0.7,en-US;q=0.6,en;q=0.5")
+	wh("accept-encoding", "gzip, deflate, br, zstd")
+	wh("upgrade-insecure-requests", "1")
+	wh("sec-fetch-dest", "document")
+	wh("sec-fetch-mode", "navigate")
+	wh("sec-fetch-site", "none")
+	wh("priority", "u=0, i")
+	wh("te", "trailers")
+
+	// send headers frame
+	framer := http2.NewFramer(conn, conn)
+	err := framer.WriteHeaders(http2.HeadersFrameParam{
+		StreamID:      1,
+		BlockFragment: buf.Bytes(),
+		EndStream:     true,
+		EndHeaders:    true,
+	})
+	if err != nil {
+		return
+	}
+	// read and discard response
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	// send GOAWAY frame to close HTTP/2 connection gracefully
+	_ = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
