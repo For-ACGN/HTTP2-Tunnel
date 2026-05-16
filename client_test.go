@@ -53,7 +53,7 @@ func TestNewClient(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClient_Login(t *testing.T) {
+func TestClient_Check(t *testing.T) {
 	defer func() {
 		testRemoveClientLogFile(t)
 		testRemoveServerLogFile(t)
@@ -62,7 +62,7 @@ func TestClient_Login(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
 	go func() {
 		err := server.Serve()
 		require.NoError(t, err)
@@ -72,6 +72,37 @@ func TestClient_Login(t *testing.T) {
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
+	err = client.Check()
+	require.NoError(t, err)
+
+	err = client.Close()
+	require.NoError(t, err)
+
+	err = server.Close()
+	require.NoError(t, err)
+}
+
+func TestClient_Login(t *testing.T) {
+	defer func() {
+		testRemoveClientLogFile(t)
+		testRemoveServerLogFile(t)
+	}()
+
+	serverCfg := testBuildServerConfig()
+	server, err := NewServer(context.Background(), serverCfg)
+	require.NoError(t, err)
+
+	go func() {
+		err := server.Serve()
+		require.NoError(t, err)
+	}()
+
+	clientCfg := testBuildClientConfig()
+	client, err := NewClient(clientCfg)
+	require.NoError(t, err)
+
+	err = client.Check()
+	require.NoError(t, err)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -91,7 +122,7 @@ func TestClient_Logout(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
 	go func() {
 		err := server.Serve()
 		require.NoError(t, err)
@@ -101,6 +132,10 @@ func TestClient_Logout(t *testing.T) {
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
+	err = client.Check()
+	require.NoError(t, err)
+	err = client.Login()
+	require.NoError(t, err)
 	err = client.Logout()
 	require.NoError(t, err)
 
@@ -120,7 +155,7 @@ func TestClient_Serve(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
 	go func() {
 		err := server.Serve()
 		require.NoError(t, err)
@@ -168,7 +203,7 @@ func TestClient_DisablePreConn(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
 	go func() {
 		err := server.Serve()
 		require.NoError(t, err)
@@ -217,7 +252,7 @@ func TestClient_connect(t *testing.T) {
 	serverCfg := testBuildServerConfig()
 	server, err := NewServer(context.Background(), serverCfg)
 	require.NoError(t, err)
-	require.NotNil(t, server)
+
 	go func() {
 		err := server.Serve()
 		require.NoError(t, err)
@@ -253,4 +288,8 @@ func TestClient_connect(t *testing.T) {
 
 	err = server.Close()
 	require.NoError(t, err)
+}
+
+func TestClient_mimic(t *testing.T) {
+
 }
