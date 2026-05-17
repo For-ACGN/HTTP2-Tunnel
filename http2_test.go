@@ -33,9 +33,15 @@ func TestHTTP2Simulation(t *testing.T) {
 	clientCfg.Client.PreConns = 0
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
+
+	hijacked, err := client.Detect()
+	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
+	err = client.Logout()
+	require.NoError(t, err)
 	err = client.Close()
 	require.NoError(t, err)
 
