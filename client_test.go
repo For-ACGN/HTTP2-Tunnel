@@ -30,6 +30,7 @@ func testBuildClientConfig() *ClientConfig {
 	if err != nil {
 		panic(err)
 	}
+	pin := "2DE2FF137B4B825A511B52C9CCD6CB4DC3F4676A7F6E1EB3F2AE8C30FFA09640"
 	config := ClientConfig{}
 	config.Common.LogPath = testClientLogFile
 	config.Common.Password = testPassword
@@ -37,7 +38,7 @@ func testBuildClientConfig() *ClientConfig {
 	config.Server.Network = "tcp4"
 	config.Server.Address = "localhost:2019"
 	config.Server.RootCA = string(ca)
-	config.Server.CertPin = []string{"2DE2FF137B4B825A511B52C9CCD6CB4DC3F4676A7F6E1EB3F2AE8C30FFA09640"}
+	config.Server.CertPin = []string{pin}
 	config.Front.Network = "tcp"
 	config.Front.Address = "127.0.0.1:2020"
 	return &config
@@ -73,8 +74,9 @@ func TestClient_Check(t *testing.T) {
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 
 	err = client.Close()
 	require.NoError(t, err)
@@ -102,8 +104,9 @@ func TestClient_Login(t *testing.T) {
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -133,8 +136,9 @@ func TestClient_Logout(t *testing.T) {
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -165,8 +169,9 @@ func TestClient_Serve(t *testing.T) {
 	clientCfg := testBuildClientConfig()
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -220,8 +225,9 @@ func TestClient_DisablePreConn(t *testing.T) {
 	clientCfg.Client.PreConns = 0
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -273,8 +279,9 @@ func TestClient_connect(t *testing.T) {
 	clientCfg.Client.PreConns = 1
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
@@ -325,8 +332,9 @@ func TestClient_mimic(t *testing.T) {
 	clientCfg := testBuildClientConfig()
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
-	err = client.Check()
+	hijacked, err := client.Detect()
 	require.NoError(t, err)
+	require.False(t, hijacked)
 	err = client.Login()
 	require.NoError(t, err)
 
