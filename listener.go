@@ -24,6 +24,10 @@ type htlsListener struct {
 func newHTLSListener(listener net.Listener, config *tls.Config, secret []byte) *htlsListener {
 	cfg := &htls.Config{
 		NextProtos: tlsNextProtos,
+		CurvePreferences: []htls.CurveID{
+			htls.X25519,
+			htls.CurveP256, htls.CurveP384, htls.CurveP521,
+		},
 	}
 	// prepare the session tick key
 	var stk [32]byte
