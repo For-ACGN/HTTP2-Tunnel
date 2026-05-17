@@ -27,6 +27,33 @@ func init() {
 	flag.Parse()
 }
 
+func warn(reason string) {
+	fmt.Println()
+	fmt.Println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+	fmt.Println("!!!                                           !!!")
+	fmt.Println("!!!   WARNING: MAN-IN-THE-MIDDLE ATTACK       !!!")
+	fmt.Println("!!!   DETECTED - CONNECTION TERMINATED        !!!")
+	fmt.Println("!!!                                           !!!")
+	fmt.Println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+	fmt.Println()
+	fmt.Println("  A potential MITM attack was detected when connecting to the server.")
+	fmt.Println("  The connection has been terminated to protect your data.")
+	fmt.Println()
+	fmt.Println("  Reason:", reason)
+	fmt.Println()
+	fmt.Println("  Possible causes:")
+	fmt.Println("    - A network intermediary is intercepting TLS")
+	fmt.Println("    - The server certificate has been replaced")
+	fmt.Println("    - A proxy or firewall is tampering with the connection")
+	fmt.Println()
+	fmt.Println("  Recommended actions:")
+	fmt.Println("    - Do NOT trust this connection")
+	fmt.Println("    - Verify your network environment")
+	fmt.Println("    - Check if a VPN or proxy is active")
+	fmt.Println("    - Contact your network administrator")
+	fmt.Println()
+}
+
 func main() {
 	if password != "" {
 		h := sha256.Sum256([]byte(password))
@@ -56,12 +83,16 @@ func main() {
 	client, err := h2tunnel.NewClient(&config)
 	checkError(err)
 
-	// check the server can be reached
+	// detect the server has been hijacked.
 	lg := log.New(os.Stdout, "", log.LstdFlags)
 	var reached bool
 	for i := 0; i < 3; i++ {
-		err = client.Check()
+		hijacked, err := client.Detect()
 		if err != nil {
+			if hijacked {
+				warn(err.Error())
+				os.Exit(1)
+			}
 			lg.Println("[error]", err)
 			continue
 		} else {
