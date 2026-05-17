@@ -39,8 +39,8 @@ const (
 
 const (
 	defaultMaxConns      = 10000
-	defaultServerTimeout = 5 * time.Minute
-	minimumServerTimeout = 3 * time.Minute
+	defaultServerTimeout = 3 * time.Minute
+	minimumServerTimeout = 2 * time.Minute
 	maximumRequestBody   = 8 * 1024 * 1024
 )
 
@@ -62,8 +62,8 @@ type Server struct {
 	listener net.Listener
 	handler  http.Handler
 
-	http1 *http.Server
-	http2 *http.Server
+	covert *http.Server
+	public *http.Server
 
 	inShutdown atomic.Bool
 }
@@ -162,38 +162,35 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		listener: listener,
 		handler:  handler,
 	}
+	// explicitly enable HTTP/1.1 only for covert usage
 	serverMux := http.NewServeMux()
-	serverMux.HandleFunc("/", server.handleIndex)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/login", pathHash), server.handleLogin)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/logout", pathHash), server.handleLogout)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/ping", pathHash), server.handlePing)
 	serverMux.HandleFunc(fmt.Sprintf("/%s/connect", pathHash), server.handleConnect)
-	// explicitly enable HTTP/1.1 only for covert usage
-	// if reach this server with h2, that means the client
-	// has been attacked with MITM.
-	http1Srv := &http.Server{
+	covert := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
 		IdleTimeout:       timeout,
 	}
-	http1Srv.Protocols = new(http.Protocols)
-	http1Srv.Protocols.SetHTTP1(true)
-	http1Srv.Protocols.SetHTTP2(true)
-	http1Srv.Protocols.SetUnencryptedHTTP2(true)
-	// explicitly enable HTTP/1.1 and HTTP/2 for common usage
+	covert.Protocols = new(http.Protocols)
+	covert.Protocols.SetHTTP1(true)
+	covert.Protocols.SetHTTP2(false)
+	covert.Protocols.SetUnencryptedHTTP2(false)
+	// explicitly enable HTTP/1.1 and HTTP/2 for public usage
 	serverMux = http.NewServeMux()
 	serverMux.HandleFunc("/", server.handleIndex)
-	http2Srv := &http.Server{
+	public := &http.Server{
 		Handler:           serverMux,
 		ReadHeaderTimeout: timeout,
 		IdleTimeout:       timeout,
 	}
-	http2Srv.Protocols = new(http.Protocols)
-	http2Srv.Protocols.SetHTTP1(true)
-	http2Srv.Protocols.SetHTTP2(true)
-	http2Srv.Protocols.SetUnencryptedHTTP2(true)
-	server.http1 = http1Srv
-	server.http2 = http2Srv
+	public.Protocols = new(http.Protocols)
+	public.Protocols.SetHTTP1(true)
+	public.Protocols.SetHTTP2(true)
+	public.Protocols.SetUnencryptedHTTP2(true)
+	server.covert = covert
+	server.public = public
 	return &server, nil
 }
 
@@ -220,6 +217,13 @@ func prepareWebHandler(logger *logger, config *ServerConfig) (http.Handler, erro
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Context().Value("client_hijacked") != nil {
+		warn := "\n"
+		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!"
+		warn += fmt.Sprintf("client from %s report it maybe hijacked", r.RemoteAddr)
+		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!"
+		s.logger.Warning(warn)
+	}
 	// copy the request body data
 	body := bytes.NewBuffer(make([]byte, 0, 4096))
 	r.Body = &struct {
@@ -445,10 +449,6 @@ func (s *Server) negotiate(r *http.Request) ([]byte, []byte, error) {
 	return sessionKey, serverPub, nil
 }
 
-func (s *Server) shuttingDown() bool {
-	return s.inShutdown.Load()
-}
-
 // CertPinning is used to calculate the certificate public key hash.
 func (s *Server) CertPinning(ctx context.Context) ([][]byte, error) {
 	if s.acl == nil {
@@ -496,7 +496,7 @@ func calcCertPublicKeyHash(cert *tls.Certificate) ([]byte, error) {
 
 // Serve is used to start http server.
 func (s *Server) Serve() error {
-	s.logger.Infof("server listening on %s", s.listener.Addr())
+	s.logger.Infof("http2-tunnel server listening on %s", s.listener.Addr())
 	var tempDelay time.Duration
 	maxDelay := time.Second
 	for {
@@ -525,6 +525,10 @@ func (s *Server) Serve() error {
 	}
 }
 
+func (s *Server) shuttingDown() bool {
+	return s.inShutdown.Load()
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	var success bool
 	defer func() {
@@ -535,19 +539,19 @@ func (s *Server) handleConn(conn net.Conn) {
 	hConn := conn.(*htlsConn)
 	err := hConn.Handshake()
 	if err != nil {
-		format := "failed to handshake from %s: %s"
+		format := "failed to handshake with %s: %s"
 		s.logger.Warningf(format, hConn.RemoteAddr(), err)
 		return
 	}
 	proto := hConn.ConnectionState().NegotiatedProtocol
 	if proto != "h2" {
 		ol := newOnceListener(hConn)
-		_ = s.http2.Serve(ol)
+		_ = s.public.Serve(ol)
 		success = true
 		return
 	}
 	if !hConn.covert {
-		s.serveHTTP2(hConn)
+		s.serveHTTP2(context.Background(), hConn)
 		return
 	}
 	reader := bufio.NewReader(hConn)
@@ -556,13 +560,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	if err != nil {
 		format := "failed to read secret preface from %s: %s"
 		s.logger.Warningf(format, hConn.RemoteAddr(), err)
-		s.serveHTTP2(bConn)
+		s.serveHTTP2(context.Background(), bConn)
 		return
 	}
 	if subtle.ConstantTimeCompare(s.preface, preface) != 1 {
-		format := "invalid secret preface from %s"
+		format := "invalid secret http/2 preface from %s"
 		s.logger.Warningf(format, hConn.RemoteAddr())
-		s.serveHTTP2(bConn)
+		ctx := context.WithValue(context.Background(), "client_hijacked", true)
+		s.serveHTTP2(ctx, bConn)
 		return
 	}
 	err = simulateHTTP2Server(bConn, s.preface)
@@ -570,29 +575,34 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	ol := newOnceListener(bConn)
-	_ = s.http1.Serve(ol)
+	_ = s.covert.Serve(ol)
 	success = true
 }
 
-func (s *Server) serveHTTP2(conn net.Conn) {
+func (s *Server) serveHTTP2(ctx context.Context, conn net.Conn) {
 	srv := http2.Server{}
 	opts := http2.ServeConnOpts{
-		BaseConfig: s.http2,
+		Context:    ctx,
+		BaseConfig: s.public,
 	}
 	srv.ServeConn(conn, &opts)
 }
 
-// Close is used to close http server.
+// Close is used to close http2-tunnel server.
 func (s *Server) Close() error {
 	s.inShutdown.Store(true)
 	if s.acl != nil {
+		fmt.Println("close acme tls listener")
 		_ = s.acl.Close()
 	} else {
+		fmt.Println("close tls listener")
 		_ = s.listener.Close()
 	}
-	_ = s.http1.Close()
-	_ = s.http2.Close()
-	s.logger.Info("server is closed")
+	fmt.Println("close covert http server")
+	_ = s.covert.Close()
+	fmt.Println("close public http server")
+	_ = s.public.Close()
+	s.logger.Info("http2-tunnel server is closed")
 	_ = s.logger.Close()
 	return nil
 }
