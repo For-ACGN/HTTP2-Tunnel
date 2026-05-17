@@ -25,20 +25,30 @@ func newReverseProxy(logger *logger, URL string, filter []string) (http.Handler,
 	proxy.Rewrite = func(r *httputil.ProxyRequest) {
 		r.SetURL(target)
 		// strip sensitive headers to prevent cookie/credential leakage
-		r.Out.Header.Del("Cookie")
-		r.Out.Header.Del("Authorization")
-		r.Out.Header.Del("Proxy-Authorization")
+		header := r.Out.Header
+		header.Del("Cookie")
+		header.Del("Authorization")
+		header.Del("Proxy-Authorization")
+		// strip custom headers
+		for _, key := range rp.filter {
+			header.Del(key)
+		}
 		r.SetXForwarded()
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// strip sensitive headers to prevent cookie/credential leakage
+		header := resp.Header
+		header.Del("Set-Cookie")
+		header.Del("Authorization")
+		// strip custom headers
 		for _, key := range rp.filter {
-			resp.Header.Del(key)
+			header.Del(key)
 		}
 		return nil
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.WriteHeader(http.StatusBadGateway)
-		logger.Error("occur when proxy:", err)
+		logger.Error("occur when reverse proxy:", err)
 	}
 	rp.proxy = proxy
 	return rp, nil
