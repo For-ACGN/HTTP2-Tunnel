@@ -149,7 +149,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	if preConns != 0 {
 		connCh = make(chan net.Conn, preConns)
 	} else {
-		connCh = make(chan net.Conn, 1)
+		connCh = make(chan net.Conn, 4)
 	}
 	client := Client{
 		logger: logger,
@@ -217,24 +217,27 @@ func (c *Client) putConn(conn net.Conn) error {
 	}
 }
 
-// Check is used to check the server can be reached.
-func (c *Client) Check() error {
-	conn, hijacked, err := c.dial()
+// Detect is used to detect the server has been hijacked.
+func (c *Client) Detect() (bool, error) {
+	conn, hijacked, err := c.dial(true)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to connect to server")
+	}
+	if hijacked {
+		return true, err
+	}
+	// send to the pre-connection channel even if it is disabled
+	return false, c.putConn(conn)
+}
+
+// Login is used to log in to server.
+func (c *Client) Login() error {
+	conn, hijacked, err := c.dial(false)
 	if err != nil {
 		return errors.Wrap(err, "failed to connect to server")
 	}
 	if hijacked {
 		return errors.Errorf("[!] detect attacker [!] - %s", err)
-	}
-	// send to the pre-connection channel even if it is disabled
-	return c.putConn(conn)
-}
-
-// Login is used to log in to server.
-func (c *Client) Login() error {
-	conn, err := c.getConn()
-	if err != nil {
-		return errors.Wrap(err, "failed to connect to server")
 	}
 	var success bool
 	defer func() {
@@ -403,7 +406,7 @@ func (c *Client) handleConn(conn net.Conn) {
 		// not append connection history to the log file
 		lg, _ := newLogger("")
 		lg.Infof(
-			"{%s} <%s> [%dms] connect %s",
+			"{%s} <%s> (---) [%dms] connect %s",
 			tun.Protocol, tun.IPType, tun.Elapsed.Milliseconds(), tun.Address,
 		)
 
@@ -429,7 +432,7 @@ func (c *Client) handleConn(conn net.Conn) {
 		wg.Wait()
 
 		lg.Infof(
-			"{%s} <%s> [%s] disconnect %s (%s/%s)",
+			"{%s} <%s> (-/-) [%s] disconnect %s (%s/%s)",
 			tun.Protocol, tun.IPType, formatDuration(time.Since(tun.Establish)), tun.Address,
 			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
 			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
@@ -453,7 +456,7 @@ func formatDuration(d time.Duration) string {
 		if m > 0 {
 			s = fmt.Sprintf("%dms", m)
 		} else {
-			s = "-"
+			s = "0s"
 		}
 	case d < time.Minute:
 		s = fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
@@ -562,6 +565,8 @@ func (c *Client) generator() {
 		}
 		c.wg.Done()
 	}()
+	defer c.logger.Info("close secret random generator")
+
 	rd := newMathRand()
 	buf := make([]byte, 32)
 	hash := sha256.New()
@@ -589,6 +594,7 @@ func (c *Client) connector() {
 		}
 		c.wg.Done()
 	}()
+
 	if c.preConns == 0 {
 		return
 	}
@@ -637,7 +643,7 @@ func (c *Client) connector() {
 }
 
 func (c *Client) preconnect() (net.Conn, error) {
-	conn, hijacked, err := c.dial()
+	conn, hijacked, err := c.dial(false)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to connect to server")
 	}
@@ -693,6 +699,7 @@ func (c *Client) watcher() {
 		}
 		c.wg.Done()
 	}()
+
 	if c.preConns == 0 {
 		return
 	}
@@ -832,7 +839,7 @@ func (c *Client) buildDialer() *net.Dialer {
 	return &net.Dialer{Resolver: resolver, Timeout: c.timeout}
 }
 
-func (c *Client) dial() (net.Conn, bool, error) {
+func (c *Client) dial(first bool) (net.Conn, bool, error) {
 	dialer := c.buildDialer()
 	conn, err := dialer.DialContext(c.ctx, c.serverNet, c.serverAddr)
 	if err != nil {
@@ -845,7 +852,13 @@ func (c *Client) dial() (net.Conn, bool, error) {
 	serverName := c.serverAddr[:colonPos]
 	tlsConfig := c.tlsConfig.Clone()
 	tlsConfig.ServerName = serverName
-	uc := utls.UClient(conn, tlsConfig, utls.HelloFirefox_Auto)
+	var clientID utls.ClientHelloID
+	if first {
+		clientID = utls.HelloFirefox_Auto
+	} else {
+		clientID = utls.HelloFirefox_PSK_Auto
+	}
+	uc := utls.UClient(conn, tlsConfig, clientID)
 	// set secret random value
 	err = uc.BuildHandshakeState()
 	if err != nil {
@@ -957,12 +970,6 @@ func (c *Client) mimic(conn net.Conn) error {
 // Close is used to close front server.
 func (c *Client) Close() error {
 	c.inShutdown.Store(true)
-	c.logger.Infof(
-		"total connection: %d, total traffic: (%s/%s)", c.numConns,
-		strings.ReplaceAll(humanize.IBytes(uint64(c.numSend)), "i", ""), // #nosec G115
-		strings.ReplaceAll(humanize.IBytes(uint64(c.numRecv)), "i", ""), // #nosec G115
-	)
-	c.logger.Info("close connectors")
 	c.cancel()
 	c.wg.Wait()
 	var err error
@@ -972,6 +979,12 @@ func (c *Client) Close() error {
 			err = errors.Wrap(err, "failed to close front listener")
 		}
 	}
+	// TODO exit log
+	c.logger.Infof(
+		"total connection: %d, total traffic: (%s/%s)", c.numConns,
+		strings.ReplaceAll(humanize.IBytes(uint64(c.numSend)), "i", ""), // #nosec G115
+		strings.ReplaceAll(humanize.IBytes(uint64(c.numRecv)), "i", ""), // #nosec G115
+	)
 	c.logger.Info("http2-tunnel client is closed")
 	_ = c.logger.Close()
 	return err
