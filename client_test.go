@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/For-ACGN/utls"
@@ -30,7 +31,6 @@ func testBuildClientConfig() *ClientConfig {
 	if err != nil {
 		panic(err)
 	}
-	pin := "2DE2FF137B4B825A511B52C9CCD6CB4DC3F4676A7F6E1EB3F2AE8C30FFA09640"
 	config := ClientConfig{}
 	config.Common.LogPath = testClientLogFile
 	config.Common.Password = testPassword
@@ -38,7 +38,7 @@ func testBuildClientConfig() *ClientConfig {
 	config.Server.Network = "tcp4"
 	config.Server.Address = "localhost:2019"
 	config.Server.RootCA = string(ca)
-	config.Server.CertPin = []string{pin}
+	config.Server.CertPin = []string{testCertPin}
 	config.Front.Network = "tcp"
 	config.Front.Address = "127.0.0.1:2020"
 	return &config
@@ -260,6 +260,39 @@ func TestClient_DisablePreConn(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestClient_Hijacked(t *testing.T) {
+	defer func() {
+		testRemoveClientLogFile(t)
+		testRemoveServerLogFile(t)
+	}()
+
+	serverCfg := testBuildServerConfig()
+	server, err := NewServer(context.Background(), serverCfg)
+	require.NoError(t, err)
+
+	go func() {
+		err := server.Serve()
+		require.NoError(t, err)
+	}()
+
+	clientCfg := testBuildClientConfig()
+	pin := strings.Repeat("a", len(testCertPin))
+	clientCfg.Server.CertPin = []string{pin}
+	client, err := NewClient(clientCfg)
+	require.NoError(t, err)
+
+	hijacked, err := client.Detect()
+	require.Error(t, err)
+	require.True(t, hijacked)
+	t.Log(err)
+
+	err = client.Close()
+	require.NoError(t, err)
+
+	err = server.Close()
+	require.NoError(t, err)
+}
+
 func TestClient_connect(t *testing.T) {
 	defer func() {
 		testRemoveClientLogFile(t)
@@ -338,7 +371,7 @@ func TestClient_mimic(t *testing.T) {
 	err = client.Login()
 	require.NoError(t, err)
 
-	conn, err := utls.Dial("tcp", clientCfg.Server.Address, client.tlsConfig)
+	conn, err := utls.Dial(client.serverNet, client.serverAddr, client.tlsConfig)
 	require.NoError(t, err)
 	err = client.mimic(conn)
 	require.NoError(t, err)
