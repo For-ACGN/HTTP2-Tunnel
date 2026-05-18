@@ -1,1 +1,1 @@
-go build -v -trimpath -ldflags "-s -w" -o mix-socks
+go build -v -trimpath -ldflags "-s -w" -o http2-tunnel
