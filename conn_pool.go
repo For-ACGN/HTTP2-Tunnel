@@ -186,18 +186,19 @@ func (c *Client) detect(conn *utls.UConn) error {
 	return nil
 }
 
+//gocyclo:ignore
 func (c *Client) mimic(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 
-	// batch preface + SETTINGS + WINDOW_UPDATE into one write (firefox behavior)
+	// batch preface + SETTINGS + WINDOW_UPDATE into one write (Firefox behavior)
 	buf := bytes.NewBuffer(make([]byte, 0, 4096))
 	buf.Write([]byte(http2.ClientPreface))
 	framer := http2.NewFramer(buf, nil)
 	err := framer.WriteSettings(
 		http2.Setting{ID: http2.SettingHeaderTableSize, Val: 65536},
 		http2.Setting{ID: http2.SettingEnablePush, Val: 0},
-		http2.Setting{ID: http2.SettingMaxConcurrentStreams, Val: 128},
 		http2.Setting{ID: http2.SettingInitialWindowSize, Val: 131072},
+		http2.Setting{ID: http2.SettingMaxFrameSize, Val: 16384},
 	)
 	if err != nil {
 		return err
@@ -211,10 +212,74 @@ func (c *Client) mimic(conn net.Conn) error {
 		return err
 	}
 
+	// encode headers with Firefox order
+	buf.Reset()
+	encoder := hpack.NewEncoder(buf)
+	wh := func(name, value string) {
+		field := hpack.HeaderField{
+			Name:  name,
+			Value: value,
+		}
+		_ = encoder.WriteField(field)
+	}
+	// if the port is 443, it wil remove suffix about ":443"
+	authority := c.serverAddr
+	host, port, err := net.SplitHostPort(c.serverAddr)
+	if err != nil {
+		return err
+	}
+	if port == "443" {
+		authority = host
+	}
+	// pseudo-headers first
+	wh(":method", "GET")
+	wh(":path", "/")
+	wh(":authority", authority)
+	wh(":scheme", "https")
+	// Firefox specific header order
+	wh("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
+	wh("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	wh("accept-language", "zh-CN,zh;q=0.9,zh-TW;q=0.8,zh-HK;q=0.7,en-US;q=0.6,en;q=0.5")
+	wh("accept-encoding", "gzip, deflate, br, zstd")
+	wh("dht", "1")
+	wh("sec-gpc", "1")
+	wh("upgrade-insecure-requests", "1")
+	wh("sec-fetch-dest", "document")
+	wh("sec-fetch-mode", "navigate")
+	wh("sec-fetch-site", "none")
+	wh("sec-fetch-user", "?1")
+	wh("priority", "u=0, i")
+	wh("te", "trailers")
+	// send headers frame
+	err = framer.WriteHeaders(http2.HeadersFrameParam{
+		StreamID:   3,
+		PadLength:  0,
+		EndHeaders: true,
+		EndStream:  true,
+		Priority: http2.PriorityParam{
+			Exclusive: false,
+			StreamDep: 0,
+			Weight:    41,
+		},
+		BlockFragment: buf.Bytes(),
+	})
+	if err != nil {
+		return err
+	}
+	err = framer.WriteWindowUpdate(3, 12451840)
+	if err != nil {
+		return err
+	}
+	// send Headers and Window update
+	_, err = buf.WriteTo(conn)
+	if err != nil {
+		return err
+	}
+
 	// read server SETTINGS and wait for server ACK
 	framer = http2.NewFramer(conn, conn)
-	var serverSettingsAcked bool
-	for !serverSettingsAcked {
+	var acked bool
+	for !acked {
 		f, err := framer.ReadFrame()
 		if err != nil {
 			return err
@@ -222,59 +287,41 @@ func (c *Client) mimic(conn net.Conn) error {
 		switch sf := f.(type) {
 		case *http2.SettingsFrame:
 			if sf.IsAck() {
-				serverSettingsAcked = true
+				acked = true
 			} else {
 				_ = framer.WriteSettings()
 			}
 		}
 	}
 
-	// encode headers with firefox order
-	buf.Reset()
-	enc := hpack.NewEncoder(buf)
-	wh := func(name, value string) {
-		_ = enc.WriteField(hpack.HeaderField{Name: name, Value: value})
-	}
-	// pseudo-headers first (firefox order)
-	wh(":method", "GET")
-	wh(":path", "/")
-	wh(":authority", c.serverAddr)
-	wh(":scheme", "https")
-	// firefox specific header order
-	wh("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")
-	wh("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	wh("accept-language", "zh-CN,zh;q=0.9,zh-TW;q=0.8,zh-HK;q=0.7,en-US;q=0.6,en;q=0.5")
-	wh("accept-encoding", "gzip, deflate, br, zstd")
-	wh("upgrade-insecure-requests", "1")
-	wh("sec-fetch-dest", "document")
-	wh("sec-fetch-mode", "navigate")
-	wh("sec-fetch-site", "none")
-	wh("priority", "u=0, i")
-	wh("te", "trailers")
-
-	// send headers frame
-	err = framer.WriteHeaders(http2.HeadersFrameParam{
-		StreamID:      1,
-		BlockFragment: buf.Bytes(),
-		EndStream:     true,
-		EndHeaders:    true,
-	})
+	// for {
+	// 	frame, err := framer.ReadFrame()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	_, ok := frame.(*http2.SettingsFrame)
+	// 	if ok {
+	// 		break
+	// 	}
+	// }
+	err = framer.WriteSettingsAck()
 	if err != nil {
 		return err
 	}
 
 	// read and discard response
-	d := time.Duration(5+newMathRand().Intn(15)) * time.Second
+	d := time.Duration(3000+newMathRand().Intn(10000)) * time.Millisecond
 	_ = conn.SetDeadline(time.Now().Add(d))
 	for {
-		f, err := framer.ReadFrame()
+		frame, err := framer.ReadFrame()
 		if err != nil {
 			break
 		}
-		switch f := f.(type) {
-		case *http2.HeadersFrame:
-			if f.StreamEnded() {
-				break
+		switch frame.(type) {
+		case *http2.PingFrame:
+			err = framer.WritePing(false, [8]byte{})
+			if err != nil {
+				return err
 			}
 		case *http2.GoAwayFrame:
 			return nil
@@ -283,6 +330,6 @@ func (c *Client) mimic(conn net.Conn) error {
 
 	// send GOAWAY frame to close HTTP/2 connection gracefully
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
-	_ = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
-	return nil
+	err = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
+	return err
 }
