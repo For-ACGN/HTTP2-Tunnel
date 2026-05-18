@@ -31,7 +31,7 @@ import (
 
 const (
 	defaultPreConns      = 16
-	defaultClientTimeout = 10 * time.Second
+	defaultClientTimeout = 15 * time.Second
 )
 
 const (
@@ -220,7 +220,7 @@ func (c *Client) putConn(conn net.Conn) error {
 // Detect is used to detect the server has been hijacked.
 func (c *Client) Detect() (bool, error) {
 	conn, hijacked, err := c.dial(true)
-	if err != nil {
+	if err != nil && !hijacked {
 		return false, errors.Wrap(err, "failed to connect to server")
 	}
 	if hijacked {
@@ -233,7 +233,7 @@ func (c *Client) Detect() (bool, error) {
 // Login is used to log in to server.
 func (c *Client) Login() error {
 	conn, hijacked, err := c.dial(false)
-	if err != nil {
+	if err != nil && !hijacked {
 		return errors.Wrap(err, "failed to connect to server")
 	}
 	if hijacked {
@@ -406,7 +406,7 @@ func (c *Client) handleConn(conn net.Conn) {
 		// not append connection history to the log file
 		lg, _ := newLogger("")
 		lg.Infof(
-			"{%s} <%s> (---) [%dms] connect %s",
+			"{%s} <%s> [%dms] connect %s",
 			tun.Protocol, tun.IPType, tun.Elapsed.Milliseconds(), tun.Address,
 		)
 
@@ -432,10 +432,11 @@ func (c *Client) handleConn(conn net.Conn) {
 		wg.Wait()
 
 		lg.Infof(
-			"{%s} <%s> (-/-) [%s] disconnect %s (%s/%s)",
-			tun.Protocol, tun.IPType, formatDuration(time.Since(tun.Establish)), tun.Address,
+			"{%s} <%s> disconnect %s (%s/%s) [%s]",
+			tun.Protocol, tun.IPType, tun.Address,
 			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
 			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
+			formatDuration(time.Since(tun.Establish)),
 		)
 
 		// update status
@@ -644,7 +645,7 @@ func (c *Client) connector() {
 
 func (c *Client) preconnect() (net.Conn, error) {
 	conn, hijacked, err := c.dial(false)
-	if err != nil {
+	if err != nil && !hijacked {
 		return nil, errors.Wrap(err, "failed to connect to server")
 	}
 	if hijacked {
@@ -917,11 +918,49 @@ func (c *Client) detect(conn *utls.UConn) error {
 func (c *Client) mimic(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 
-	// TODO HTTP/2 handshake
+	// batch preface + SETTINGS + WINDOW_UPDATE into one write (firefox behavior)
+	buf := bytes.NewBuffer(make([]byte, 0, 4096))
+	buf.Write([]byte(http2.ClientPreface))
+	framer := http2.NewFramer(buf, nil)
+	err := framer.WriteSettings(
+		http2.Setting{ID: http2.SettingHeaderTableSize, Val: 65536},
+		http2.Setting{ID: http2.SettingEnablePush, Val: 0},
+		http2.Setting{ID: http2.SettingMaxConcurrentStreams, Val: 128},
+		http2.Setting{ID: http2.SettingInitialWindowSize, Val: 131072},
+	)
+	if err != nil {
+		return err
+	}
+	err = framer.WriteWindowUpdate(0, 12517377)
+	if err != nil {
+		return err
+	}
+	_, err = buf.WriteTo(conn)
+	if err != nil {
+		return err
+	}
+
+	// read server SETTINGS and wait for server ACK
+	framer = http2.NewFramer(conn, conn)
+	var serverSettingsAcked bool
+	for !serverSettingsAcked {
+		f, err := framer.ReadFrame()
+		if err != nil {
+			return err
+		}
+		switch sf := f.(type) {
+		case *http2.SettingsFrame:
+			if sf.IsAck() {
+				serverSettingsAcked = true
+			} else {
+				_ = framer.WriteSettings()
+			}
+		}
+	}
 
 	// encode headers with firefox order
-	var buf bytes.Buffer
-	enc := hpack.NewEncoder(&buf)
+	buf.Reset()
+	enc := hpack.NewEncoder(buf)
 	wh := func(name, value string) {
 		_ = enc.WriteField(hpack.HeaderField{Name: name, Value: value})
 	}
@@ -943,8 +982,7 @@ func (c *Client) mimic(conn net.Conn) error {
 	wh("te", "trailers")
 
 	// send headers frame
-	framer := http2.NewFramer(conn, conn)
-	err := framer.WriteHeaders(http2.HeadersFrameParam{
+	err = framer.WriteHeaders(http2.HeadersFrameParam{
 		StreamID:      1,
 		BlockFragment: buf.Bytes(),
 		EndStream:     true,
@@ -953,21 +991,32 @@ func (c *Client) mimic(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
+
 	// read and discard response
-	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
-	if err != nil {
-		return err
+	d := time.Duration(5+newMathRand().Intn(15)) * time.Second
+	_ = conn.SetDeadline(time.Now().Add(d))
+	for {
+		f, err := framer.ReadFrame()
+		if err != nil {
+			break
+		}
+		switch f := f.(type) {
+		case *http2.HeadersFrame:
+			if f.StreamEnded() {
+				break
+			}
+		case *http2.GoAwayFrame:
+			return nil
+		}
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
 
 	// send GOAWAY frame to close HTTP/2 connection gracefully
-	_ = framer.WriteGoAway(0, http2.ErrCodeNo, nil) // TODO ? replace ?
+	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	_ = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
 	return nil
 }
 
-// Close is used to close front server.
+// Close is used to close http2-tunnel client.
 func (c *Client) Close() error {
 	c.inShutdown.Store(true)
 	c.cancel()
@@ -979,7 +1028,6 @@ func (c *Client) Close() error {
 			err = errors.Wrap(err, "failed to close front listener")
 		}
 	}
-	// TODO exit log
 	c.logger.Infof(
 		"total connection: %d, total traffic: (%s/%s)", c.numConns,
 		strings.ReplaceAll(humanize.IBytes(uint64(c.numSend)), "i", ""), // #nosec G115
