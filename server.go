@@ -44,6 +44,8 @@ const (
 	maximumRequestBody   = 8 * 1024 * 1024
 )
 
+type clientHijacked struct{}
+
 // Server is a HTTP2-Tunnel server.
 type Server struct {
 	logger *logger
@@ -217,11 +219,11 @@ func prepareWebHandler(logger *logger, config *ServerConfig) (http.Handler, erro
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.Context().Value("client_hijacked") != nil {
+	if r.Context().Value(clientHijacked{}) != nil {
 		warn := "\n"
-		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!"
-		warn += fmt.Sprintf("client from %s report it maybe hijacked", r.RemoteAddr)
-		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!"
+		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!\n"
+		warn += fmt.Sprintf("client from %s report it maybe hijacked\n", r.RemoteAddr)
+		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!\n"
 		s.logger.Warning(warn)
 	}
 	// copy the request body data
@@ -566,7 +568,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	if subtle.ConstantTimeCompare(s.preface, preface) != 1 {
 		format := "invalid secret http/2 preface from %s"
 		s.logger.Warningf(format, hConn.RemoteAddr())
-		ctx := context.WithValue(context.Background(), "client_hijacked", true)
+		ctx := context.WithValue(context.Background(), clientHijacked{}, true)
 		s.serveHTTP2(ctx, bConn)
 		return
 	}
@@ -592,15 +594,15 @@ func (s *Server) serveHTTP2(ctx context.Context, conn net.Conn) {
 func (s *Server) Close() error {
 	s.inShutdown.Store(true)
 	if s.acl != nil {
-		fmt.Println("close acme tls listener")
+		s.logger.Info("close acme tls listener")
 		_ = s.acl.Close()
 	} else {
-		fmt.Println("close tls listener")
+		s.logger.Info("close tls listener")
 		_ = s.listener.Close()
 	}
-	fmt.Println("close covert http server")
+	s.logger.Info("close covert http server")
 	_ = s.covert.Close()
-	fmt.Println("close public http server")
+	s.logger.Info("close public http server")
 	_ = s.public.Close()
 	s.logger.Info("http2-tunnel server is closed")
 	_ = s.logger.Close()
