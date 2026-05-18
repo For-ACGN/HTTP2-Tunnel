@@ -115,6 +115,12 @@ func (c *Client) dial(first bool) (net.Conn, bool, error) {
 		clientID = utls.HelloFirefox_PSK_Auto
 	}
 	uc := utls.UClient(conn, tlsConfig, clientID)
+	var success bool
+	defer func() {
+		if !success {
+			_ = uc.Close()
+		}
+	}()
 	// set secret random value
 	err = uc.BuildHandshakeState()
 	if err != nil {
@@ -130,7 +136,6 @@ func (c *Client) dial(first bool) (net.Conn, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	// check the negotiated protocol
 	err = uc.Handshake()
 	if err != nil {
 		return nil, false, err
@@ -144,6 +149,7 @@ func (c *Client) dial(first bool) (net.Conn, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	success = true
 	return uc, false, nil
 }
 
@@ -190,10 +196,10 @@ func (c *Client) detect(conn *utls.UConn) error {
 func (c *Client) mimic(conn net.Conn) error {
 	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 
-	// batch preface + SETTINGS + WINDOW_UPDATE into one write (Firefox behavior)
-	buf := bytes.NewBuffer(make([]byte, 0, 4096))
-	buf.Write([]byte(http2.ClientPreface))
-	framer := http2.NewFramer(buf, nil)
+	// batch preface + SETTINGS + WINDOW_UPDATE into one TLS Record (Firefox behavior)
+	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
+	buffer.Write([]byte(http2.ClientPreface))
+	framer := http2.NewFramer(buffer, nil)
 	err := framer.WriteSettings(
 		http2.Setting{ID: http2.SettingHeaderTableSize, Val: 65536},
 		http2.Setting{ID: http2.SettingEnablePush, Val: 0},
@@ -207,14 +213,14 @@ func (c *Client) mimic(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	_, err = buf.WriteTo(conn)
+	_, err = buffer.WriteTo(conn)
 	if err != nil {
 		return err
 	}
 
 	// encode headers with Firefox order
-	buf.Reset()
-	encoder := hpack.NewEncoder(buf)
+	hpb := bytes.NewBuffer(make([]byte, 0, 4096))
+	encoder := hpack.NewEncoder(hpb)
 	wh := func(name, value string) {
 		field := hpack.HeaderField{
 			Name:  name,
@@ -251,6 +257,7 @@ func (c *Client) mimic(conn net.Conn) error {
 	wh("priority", "u=0, i")
 	wh("te", "trailers")
 	// send headers frame
+	buffer.Reset()
 	err = framer.WriteHeaders(http2.HeadersFrameParam{
 		StreamID:   3,
 		PadLength:  0,
@@ -261,7 +268,7 @@ func (c *Client) mimic(conn net.Conn) error {
 			StreamDep: 0,
 			Weight:    41,
 		},
-		BlockFragment: buf.Bytes(),
+		BlockFragment: hpb.Bytes(),
 	})
 	if err != nil {
 		return err
@@ -270,46 +277,30 @@ func (c *Client) mimic(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	// send Headers and Window update
-	_, err = buf.WriteTo(conn)
+	// send Headers and WINDOW_UPDATE
+	_, err = buffer.WriteTo(conn)
 	if err != nil {
 		return err
 	}
 
-	// read server SETTINGS and wait for server ACK
+	// read server SETTINGS and send client ACK
 	framer = http2.NewFramer(conn, conn)
-	var acked bool
-	for !acked {
-		f, err := framer.ReadFrame()
+	for {
+		frame, err := framer.ReadFrame()
 		if err != nil {
 			return err
 		}
-		switch sf := f.(type) {
-		case *http2.SettingsFrame:
-			if sf.IsAck() {
-				acked = true
-			} else {
-				_ = framer.WriteSettings()
-			}
+		_, ok := frame.(*http2.SettingsFrame)
+		if ok {
+			break
 		}
 	}
-
-	// for {
-	// 	frame, err := framer.ReadFrame()
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	_, ok := frame.(*http2.SettingsFrame)
-	// 	if ok {
-	// 		break
-	// 	}
-	// }
 	err = framer.WriteSettingsAck()
 	if err != nil {
 		return err
 	}
 
-	// read and discard response
+	// read and discard server frames
 	d := time.Duration(3000+newMathRand().Intn(10000)) * time.Millisecond
 	_ = conn.SetDeadline(time.Now().Add(d))
 	for {
