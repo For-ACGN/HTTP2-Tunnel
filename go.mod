@@ -7,7 +7,7 @@ require (
 	github.com/For-ACGN/autocert v1.3.0
 	github.com/For-ACGN/monkey v1.0.2
 	github.com/For-ACGN/htls v1.0.0
-	github.com/For-ACGN/utls v1.0.2
+	github.com/For-ACGN/utls v1.1.0
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
