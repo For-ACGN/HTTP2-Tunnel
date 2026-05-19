@@ -57,6 +57,8 @@ type Client struct {
 	proxyUsername string
 	proxyPassword string
 
+	portmaps map[net.Listener]string
+
 	randCh chan []byte
 	connCh chan net.Conn
 
@@ -103,42 +105,40 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		return nil, errors.Errorf("jitter level must be between 1 and %d", maximumJitterLevel)
 	}
 	// prepare certificate pinning
-	var certPin []string
-	for _, pin := range config.Client.CertPin {
-		b, err := hex.DecodeString(pin)
-		if err != nil {
-			return nil, errors.Wrap(err, "invalid server certificate pin")
-		}
-		if len(b) != sha256.Size {
-			return nil, errors.New("invalid server certificate pin format")
-		}
-		certPin = append(certPin, hex.EncodeToString(b))
+	certPin, err := prepareCertPinning(config.Client.CertPin)
+	if err != nil {
+		return nil, err
+	}
+	certPool, err := prepareRootCA(config.Client.RootCA)
+	if err != nil {
+		return nil, err
 	}
 	// prepare tls config for client
 	tlsConfig := &utls.Config{
+		RootCAs:            certPool,
 		NextProtos:         tlsNextProtos,
 		ClientSessionCache: utls.NewLRUClientSessionCache(64),
 		OmitEmptyPsk:       true,
 	}
-	rootCA := config.Client.RootCA
-	if rootCA != "" {
-		certs, err := parseCertificatesPEM([]byte(rootCA))
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse Root CA certificates")
-		}
-		certPool := x509.NewCertPool()
-		for _, cert := range certs {
-			certPool.AddCert(cert)
-		}
-		tlsConfig.RootCAs = certPool
-	}
 	// prepare the front proxy listener
-	var listener net.Listener
+	var proxy net.Listener
 	if config.Proxy.Enabled {
-		listener, err = net.Listen(config.Proxy.Network, config.Proxy.Address)
+		proxy, err = net.Listen(config.Proxy.Network, config.Proxy.Address)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to listen for the front server")
+			return nil, errors.Wrap(err, "failed to listen for the front proxy")
 		}
+	}
+	// prepare the portmap listeners
+	portmaps := make(map[net.Listener]string)
+	for _, portmap := range config.Portmaps {
+		if !portmap.Enabled {
+			continue
+		}
+		listener, err := net.Listen(portmap.Network, portmap.Address)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to listen for the portmap")
+		}
+		portmaps[listener] = portmap.Target
 	}
 	// build pre-connection channel
 	var connCh chan net.Conn
@@ -168,9 +168,10 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		localAddr:  config.Server.LocalAddress,
 		tlsConfig:  tlsConfig,
 
-		proxyListener: listener,
+		proxyListener: proxy,
 		proxyUsername: config.Proxy.Username,
 		proxyPassword: config.Proxy.Password,
+		portmaps:      portmaps,
 
 		randCh: make(chan []byte, 128+maxConns),
 		connCh: connCh,
@@ -180,6 +181,36 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	client.wg.Add(1)
 	go client.generator()
 	return &client, nil
+}
+
+func prepareCertPinning(list []string) ([]string, error) {
+	var certPin []string
+	for _, pin := range list {
+		b, err := hex.DecodeString(pin)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid server certificate pin")
+		}
+		if len(b) != sha256.Size {
+			return nil, errors.New("invalid server certificate pin format")
+		}
+		certPin = append(certPin, hex.EncodeToString(b))
+	}
+	return certPin, nil
+}
+
+func prepareRootCA(pem string) (*x509.CertPool, error) {
+	if pem == "" {
+		return nil, nil
+	}
+	certs, err := parseCertificatesPEM([]byte(pem))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to parse Root CA certificates")
+	}
+	certPool := x509.NewCertPool()
+	for _, cert := range certs {
+		certPool.AddCert(cert)
+	}
+	return certPool, nil
 }
 
 func (c *Client) buildURL(path string) string {
@@ -283,7 +314,7 @@ func (c *Client) Logout() error {
 	return simulateHTTP2GoAway(conn)
 }
 
-// Serve is used to start front server.
+// Serve is used to serve front proxy server and portmaps.
 func (c *Client) Serve() error {
 	// start pre-connection connector
 	num := 2 + newMathRand().Intn(4)
