@@ -25,8 +25,8 @@ import (
 )
 
 const (
-	defaultPreConns      = 16
-	defaultClientTimeout = 15 * time.Second
+	defaultClientMaxConns = 4
+	defaultClientTimeout  = 15 * time.Second
 )
 
 // Client is a HTTP2-Tunnel client.
@@ -38,20 +38,24 @@ type Client struct {
 	pathHash string
 	preface  []byte
 
+	certPin    []string
 	timeout    time.Duration
-	preConns   int
+	maxConns   int
 	bufferSize int
 	jitLevel   int
 	dnsServer  string
 
+	// about connect remote server
 	serverNet  string
 	serverAddr string
+	localNet   string
+	localAddr  string
 	tlsConfig  *utls.Config
-	certPin    []string
 
-	frontUsername string
-	frontPassword string
-	frontListener net.Listener
+	// about front proxy server
+	proxyListener net.Listener
+	proxyUsername string
+	proxyPassword string
 
 	randCh chan []byte
 	connCh chan net.Conn
@@ -83,9 +87,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	if timeout < time.Second {
 		timeout = defaultClientTimeout
 	}
-	preConns := config.Client.PreConns
-	if preConns < 0 {
-		preConns = defaultPreConns
+	maxConns := config.Tunnel.MaxConns
+	if maxConns < 0 {
+		maxConns = defaultClientMaxConns
 	}
 	bufferSize := config.Tunnel.BufferSize
 	if bufferSize < 1 {
@@ -98,13 +102,25 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	if jitLevel > maximumJitterLevel {
 		return nil, errors.Errorf("jitter level must be between 1 and %d", maximumJitterLevel)
 	}
+	// prepare certificate pinning
+	var certPin []string
+	for _, pin := range config.Client.CertPin {
+		b, err := hex.DecodeString(pin)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid server certificate pin")
+		}
+		if len(b) != sha256.Size {
+			return nil, errors.New("invalid server certificate pin format")
+		}
+		certPin = append(certPin, hex.EncodeToString(b))
+	}
 	// prepare tls config for client
 	tlsConfig := &utls.Config{
 		NextProtos:         tlsNextProtos,
 		ClientSessionCache: utls.NewLRUClientSessionCache(64),
 		OmitEmptyPsk:       true,
 	}
-	rootCA := config.Server.RootCA
+	rootCA := config.Client.RootCA
 	if rootCA != "" {
 		certs, err := parseCertificatesPEM([]byte(rootCA))
 		if err != nil {
@@ -116,26 +132,18 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		}
 		tlsConfig.RootCAs = certPool
 	}
-	var certPin []string
-	for _, pin := range config.Server.CertPin {
-		b, err := hex.DecodeString(pin)
+	// prepare the front proxy listener
+	var listener net.Listener
+	if config.Proxy.Enabled {
+		listener, err = net.Listen(config.Proxy.Network, config.Proxy.Address)
 		if err != nil {
-			return nil, errors.Wrap(err, "invalid server certificate pin")
+			return nil, errors.Wrap(err, "failed to listen for the front server")
 		}
-		if len(b) != sha256.Size {
-			return nil, errors.New("invalid server certificate pin format")
-		}
-		certPin = append(certPin, hex.EncodeToString(b))
-	}
-	// prepare the front server listener
-	listener, err := net.Listen(config.Front.Network, config.Front.Address)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to listen for the front server")
 	}
 	// build pre-connection channel
 	var connCh chan net.Conn
-	if preConns != 0 {
-		connCh = make(chan net.Conn, preConns)
+	if maxConns != 0 {
+		connCh = make(chan net.Conn, maxConns)
 	} else {
 		connCh = make(chan net.Conn, 4)
 	}
@@ -147,22 +155,24 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		pathHash: pathHash,
 		preface:  preface,
 
+		certPin:    certPin,
 		timeout:    timeout,
-		preConns:   preConns,
+		maxConns:   maxConns,
 		bufferSize: bufferSize,
 		jitLevel:   jitLevel,
 		dnsServer:  config.Android.DNSServer,
 
-		serverNet:  config.Server.Network,
-		serverAddr: config.Server.Address,
+		serverNet:  config.Server.RemoteNetwork,
+		serverAddr: config.Server.RemoteAddress,
+		localNet:   config.Server.LocalNetwork,
+		localAddr:  config.Server.LocalAddress,
 		tlsConfig:  tlsConfig,
-		certPin:    certPin,
 
-		frontUsername: config.Front.Username,
-		frontPassword: config.Front.Password,
-		frontListener: listener,
+		proxyListener: listener,
+		proxyUsername: config.Proxy.Username,
+		proxyPassword: config.Proxy.Password,
 
-		randCh: make(chan []byte, 128+preConns),
+		randCh: make(chan []byte, 128+maxConns),
 		connCh: connCh,
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
@@ -282,15 +292,15 @@ func (c *Client) Serve() error {
 		go c.connector()
 	}
 	// start pre-connection watcher
-	for i := 0; i < c.preConns+2; i++ {
+	for i := 0; i < c.maxConns+2; i++ {
 		c.wg.Add(1)
 		go c.watcher()
 	}
-	c.logger.Infof("front proxy server listening on %s", c.frontListener.Addr())
+	c.logger.Infof("front proxy server listening on %s", c.proxyListener.Addr())
 	var tempDelay time.Duration
 	maxDelay := time.Second
 	for {
-		conn, err := c.frontListener.Accept()
+		conn, err := c.proxyListener.Accept()
 		if err == nil {
 			go c.handleConn(conn)
 			continue
@@ -528,8 +538,8 @@ func (c *Client) Close() error {
 	c.cancel()
 	c.wg.Wait()
 	var err error
-	if c.frontListener != nil {
-		err = c.frontListener.Close()
+	if c.proxyListener != nil {
+		err = c.proxyListener.Close()
 		if err != nil {
 			err = errors.Wrap(err, "failed to close front listener")
 		}
