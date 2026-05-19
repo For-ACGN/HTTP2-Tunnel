@@ -38,10 +38,6 @@ type ServerConfig struct {
 		} `toml:"static"`
 	} `toml:"tls"`
 
-	Tunnel struct {
-		MaxBufferSize int `toml:"max_buffer_size"`
-	} `toml:"tunnel"`
-
 	Web struct {
 		Mode string `toml:"mode"`
 
@@ -54,6 +50,10 @@ type ServerConfig struct {
 			Directory string `toml:"dir"`
 		} `toml:"static"`
 	} `toml:"web"`
+
+	Tunnel struct {
+		MaxBufferSize int `toml:"max_buffer_size"`
+	} `toml:"tunnel"`
 }
 
 // ClientConfig contains configurations for proxy client.
@@ -64,25 +64,20 @@ type ClientConfig struct {
 	} `toml:"common"`
 
 	Client struct {
-		Timeout  duration `toml:"timeout"`
-		PreConns int      `toml:"pre_conns"`
+		CertPin []string `toml:"cert_pin"`
+		RootCA  string   `toml:"root_ca"`
+		Timeout duration `toml:"timeout"`
 	} `toml:"client"`
 
 	Server struct {
-		Network string   `toml:"network"`
-		Address string   `toml:"address"`
-		RootCA  string   `toml:"root_ca"`
-		CertPin []string `toml:"cert_pin"`
+		RemoteNetwork string `toml:"remote_net"`
+		RemoteAddress string `toml:"remote_addr"`
+		LocalNetwork  string `toml:"local_net"`
+		LocalAddress  string `toml:"local_addr"`
 	} `toml:"server"`
 
-	Front struct {
-		Network  string `toml:"network"`
-		Address  string `toml:"address"`
-		Username string `toml:"username"`
-		Password string `toml:"password"`
-	} `toml:"front"`
-
 	Tunnel struct {
+		MaxConns    int `toml:"max_conns"`
 		BufferSize  int `toml:"buffer_size"`
 		JitterLevel int `toml:"jitter_level"`
 	} `toml:"tunnel"`
@@ -90,6 +85,21 @@ type ClientConfig struct {
 	Android struct {
 		DNSServer string `toml:"dns_server"`
 	} `toml:"android"`
+
+	Proxy struct {
+		Enabled  bool   `toml:"enabled"`
+		Network  string `toml:"network"`
+		Address  string `toml:"address"`
+		Username string `toml:"username"`
+		Password string `toml:"password"`
+	} `toml:"proxy"`
+
+	Portmaps []struct {
+		Enabled bool   `toml:"enabled"`
+		Network string `toml:"network"`
+		Address string `toml:"address"`
+		Target  string `toml:"target"`
+	} `toml:"portmaps"`
 } // #nosec
 
 // duration is patch for toml v2.
