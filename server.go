@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,10 +39,10 @@ const (
 )
 
 const (
-	defaultMaxConns      = 10000
-	defaultServerTimeout = 3 * time.Minute
-	minimumServerTimeout = 2 * time.Minute
-	maximumRequestBody   = 8 * 1024 * 1024
+	defaultServerMaxConns = 10000
+	defaultServerTimeout  = 3 * time.Minute
+	minimumServerTimeout  = 2 * time.Minute
+	maximumRequestBody    = 8 * 1024 * 1024
 )
 
 type clientHijacked struct{}
@@ -95,7 +96,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	maxConns := config.HTTP.MaxConns
 	if maxConns < 1 {
-		maxConns = defaultMaxConns
+		maxConns = defaultServerMaxConns
 	}
 	maxBufSize := config.Tunnel.MaxBufferSize
 	if maxBufSize < 1 {
@@ -220,10 +221,14 @@ func prepareWebHandler(logger *logger, config *ServerConfig) (http.Handler, erro
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Value(clientHijacked{}) != nil {
-		warn := "\n"
-		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!\n"
-		warn += fmt.Sprintf("client from %s report it maybe hijacked\n", r.RemoteAddr)
-		warn += "!!!!++++++++++++++++++++++++++++++++++++++++++++++++!!!!\n"
+		// +------------------------------------------------------+
+		// | client from 127.0.0.1:61259 report it maybe hijacked |
+		// +------------------------------------------------------+
+		report := fmt.Sprintf("| client from %s report it maybe hijacked |\n", r.RemoteAddr)
+		warn := "!!!!!!!!!!!!!!!!\n"
+		warn += "+" + strings.Repeat("-", len(report)-3) + "+\n"
+		warn += report
+		warn += "+" + strings.Repeat("-", len(report)-3) + "+"
 		s.logger.Warning(warn)
 	}
 	// copy the request body data
@@ -461,6 +466,7 @@ func (s *Server) CertPinning(ctx context.Context) ([][]byte, error) {
 		}
 		return [][]byte{hash}, nil
 	}
+	s.logger.Info("pre-provision certificate from acme server")
 	err := s.acl.Preprovision(ctx)
 	if err != nil {
 		return nil, err
