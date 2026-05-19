@@ -27,6 +27,7 @@ import (
 const (
 	defaultClientMaxConns = 4
 	defaultClientTimeout  = 15 * time.Second
+	minimumClientConns    = 2
 )
 
 // Client is a HTTP2-Tunnel client.
@@ -57,7 +58,7 @@ type Client struct {
 	proxyUsername string
 	proxyPassword string
 
-	portmaps map[net.Listener]string
+	portmappers []*portmapper
 
 	randCh chan []byte
 	connCh chan net.Conn
@@ -72,6 +73,12 @@ type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+type portmapper struct {
+	listener net.Listener
+	network  string
+	address  string
 }
 
 // NewClient is used to create a HTTP2-Tunnel client.
@@ -90,7 +97,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		timeout = defaultClientTimeout
 	}
 	maxConns := config.Tunnel.MaxConns
-	if maxConns < 0 {
+	if maxConns < minimumClientConns {
 		maxConns = defaultClientMaxConns
 	}
 	bufferSize := config.Tunnel.BufferSize
@@ -128,24 +135,21 @@ func NewClient(config *ClientConfig) (*Client, error) {
 			return nil, errors.Wrap(err, "failed to listen for the front proxy")
 		}
 	}
-	// prepare the portmap listeners
-	portmaps := make(map[net.Listener]string)
+	// prepare the portmapper listeners
+	var portmappers []*portmapper
 	for _, portmap := range config.Portmaps {
 		if !portmap.Enabled {
 			continue
 		}
-		listener, err := net.Listen(portmap.Network, portmap.Address)
+		listener, err := net.Listen(portmap.LocalNetwork, portmap.LocalAddress)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to listen for the portmap")
 		}
-		portmaps[listener] = portmap.Target
-	}
-	// build pre-connection channel
-	var connCh chan net.Conn
-	if maxConns != 0 {
-		connCh = make(chan net.Conn, maxConns)
-	} else {
-		connCh = make(chan net.Conn, 4)
+		portmappers = append(portmappers, &portmapper{
+			listener: listener,
+			network:  portmap.RemoteNetwork,
+			address:  portmap.RemoteAddress,
+		})
 	}
 	client := Client{
 		logger: logger,
@@ -171,10 +175,10 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		proxyListener: proxy,
 		proxyUsername: config.Proxy.Username,
 		proxyPassword: config.Proxy.Password,
-		portmaps:      portmaps,
+		portmappers:   portmappers,
 
 		randCh: make(chan []byte, 128+maxConns),
-		connCh: connCh,
+		connCh: make(chan net.Conn, maxConns),
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
 	// start secret random generator
@@ -471,7 +475,32 @@ func formatDuration(d time.Duration) string {
 	return strings.ReplaceAll(s, ".0", "")
 }
 
-func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
+// Connect is used to connect target though the tunnel.
+func (c *Client) Connect(ctx context.Context, network, address string) (net.Conn, error) {
+	tun, err := c.connect(ctx, "Direct", network, address)
+	if err != nil {
+		// not append error that contain private data to the log file
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "no such host"):
+		default:
+			c.logger.Warningf("failed to create tunnel: %s", err)
+			return nil, err
+		}
+		lg, _ := newLogger("")
+		lg.Warningf("failed to create tunnel: %s", err)
+		return nil, err
+	}
+	// not append connection history to the log file
+	lg, _ := newLogger("")
+	lg.Infof(
+		"{%s} <%s> [%dms] connect %s",
+		tun.Protocol, tun.IPType, tun.Elapsed.Milliseconds(), tun.Address,
+	)
+	return tun, nil
+}
+
+func (c *Client) connect(ctx context.Context, protocol, network, address string) (*tunnel, error) {
 	now := time.Now()
 	// get connection from preconnect
 	conn, err := c.getConn()
@@ -504,7 +533,7 @@ func (c *Client) connect(protocol, network, address string) (*tunnel, error) {
 		return nil, errors.Wrap(err, "failed to x25519 with base point")
 	}
 	// send connect request
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.buildURL("connect"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.buildURL("connect"), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create request for connect")
 	}
@@ -570,9 +599,29 @@ func (c *Client) Close() error {
 	c.wg.Wait()
 	var err error
 	if c.proxyListener != nil {
+		c.logger.Info("close front proxy server")
 		err = c.proxyListener.Close()
 		if err != nil {
-			err = errors.Wrap(err, "failed to close front listener")
+			err = errors.Wrap(err, "failed to close front proxy listener")
+		}
+	}
+	if len(c.portmappers) > 0 {
+		c.logger.Info("close portmappers")
+		for _, pm := range c.portmappers {
+			err = pm.listener.Close()
+			if err != nil {
+				err = errors.Wrap(err, "failed to close portmapper")
+			}
+		}
+	}
+	if len(c.connCh) > 0 {
+		c.logger.Info("close pre-connections")
+		for i := 0; i < len(c.connCh); i++ {
+			select {
+			case conn := <-c.connCh:
+				_ = conn.Close()
+			default:
+			}
 		}
 	}
 	c.logger.Infof(
