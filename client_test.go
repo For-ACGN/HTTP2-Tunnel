@@ -13,7 +13,7 @@ import (
 
 const testClientLogFile = "testdata/client.log"
 
-var (
+const (
 	testCertificatePin = "2DE2FF137B4B825A511B52C9CCD6CB4DC3F4676A7F6E1EB3F2AE8C30FFA09640"
 	testProxyUsername  = "proxy_user"
 	testProxyPassword  = "proxy_pass"
@@ -150,7 +150,7 @@ func TestClient_Logout(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClient_Serve(t *testing.T) {
+func TestClient_Proxy(t *testing.T) {
 	defer func() {
 		testRemoveClientLogFile(t)
 		testRemoveServerLogFile(t)
@@ -186,6 +186,7 @@ func TestClient_Serve(t *testing.T) {
 	}
 	httpClient := http.Client{
 		Transport: &transport,
+		Timeout:   defaultClientTimeout,
 	}
 	resp, err := httpClient.Get("https://github.com/")
 	require.NoError(t, err)
@@ -195,6 +196,60 @@ func TestClient_Serve(t *testing.T) {
 	require.Equal(t, "HTTP/2.0", resp.Proto)
 	t.Log(len(data))
 	t.Log(string(data))
+	httpClient.CloseIdleConnections()
+
+	err = client.Logout()
+	require.NoError(t, err)
+	err = client.Close()
+	require.NoError(t, err)
+
+	err = server.Close()
+	require.NoError(t, err)
+}
+
+func TestClient_Connect(t *testing.T) {
+	defer func() {
+		testRemoveClientLogFile(t)
+		testRemoveServerLogFile(t)
+	}()
+
+	serverCfg := testBuildServerConfig()
+	server, err := NewServer(context.Background(), serverCfg)
+	require.NoError(t, err)
+
+	go func() {
+		err := server.Serve()
+		require.NoError(t, err)
+	}()
+
+	clientCfg := testBuildClientConfig()
+	client, err := NewClient(clientCfg)
+	require.NoError(t, err)
+	hijacked, err := client.Detect()
+	require.NoError(t, err)
+	require.False(t, hijacked)
+	err = client.Login()
+	require.NoError(t, err)
+
+	go func() {
+		err := client.Serve()
+		require.NoError(t, err)
+	}()
+
+	transport := http.Transport{
+		DialContext: client.Connect,
+	}
+	httpClient := http.Client{
+		Transport: &transport,
+		Timeout:   defaultClientTimeout,
+	}
+	resp, err := httpClient.Get("https://github.com/")
+	require.NoError(t, err)
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	t.Log(len(data))
+	t.Log(string(data))
+	httpClient.CloseIdleConnections()
 
 	err = client.Logout()
 	require.NoError(t, err)
