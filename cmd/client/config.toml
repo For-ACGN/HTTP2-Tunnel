@@ -3,24 +3,41 @@
   log_path = "http2-tunnel.log"
 
 [client]
-  timeout   = "15s"
-  pre_conns = 16
+  cert_pin = ["64-bytes-hex-string"]
+  root_ca  = ""    # ca file path
+  timeout  = "15s"
 
 [server]
-  network  = "tcp"
-  address  = "1.1.1.1:443"
-  root_ca  = ""  # ca file path
-  cert_pin = ["64-bytes-hex-string"]
-
-[front]
-  network  = "tcp"
-  address  = "127.0.0.1:2026"
-  username = ""
-  password = ""
+  remote_net  = "tcp"
+  remote_addr = "1.1.1.1:443"
+  local_net   = ""
+  local_addr  = ""
 
 [tunnel]
-  buffer_size  = 2048
-  jitter_level = 3    # 1 - 10
+  max_conns    = 4
+  buffer_size  = 32768
+  jitter_level = 3     # 1-10
 
 [android]
   dns_server = "8.8.8.8:53"
+
+[proxy]
+  enabled  = true
+  network  = "tcp"
+  address  = "127.0.0.1:1080"
+  username = ""
+  password = ""
+
+[[portmaps]]
+  enabled     = false
+  local_net   = "tcp"
+  local_addr  = "127.0.0.1:4000"
+  remote_net  = "tcp"
+  remote_addr = "1.1.1.1:8081"
+
+[[portmaps]]
+  enabled     = false
+  local_net   = "tcp"
+  local_addr  = "127.0.0.1:4001"
+  remote_net  = "tcp6"
+  remote_addr = "example.com:8081"
