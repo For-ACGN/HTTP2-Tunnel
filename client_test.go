@@ -14,8 +14,9 @@ import (
 const testClientLogFile = "testdata/client.log"
 
 var (
-	testProxyUsername = "proxy_user"
-	testProxyPassword = "proxy_pass"
+	testCertificatePin = "2DE2FF137B4B825A511B52C9CCD6CB4DC3F4676A7F6E1EB3F2AE8C30FFA09640"
+	testProxyUsername  = "proxy_user"
+	testProxyPassword  = "proxy_pass"
 )
 
 func testRemoveClientLogFile(t *testing.T) {
@@ -29,15 +30,16 @@ func testBuildClientConfig() *ClientConfig {
 		panic(err)
 	}
 	config := ClientConfig{}
-	config.Common.LogPath = testClientLogFile
 	config.Common.Password = testPassword
-	config.Client.PreConns = 4
-	config.Server.Network = "tcp4"
-	config.Server.Address = "localhost:2019"
-	config.Server.RootCA = string(ca)
-	config.Server.CertPin = []string{testCertPin}
-	config.Front.Network = "tcp"
-	config.Front.Address = "127.0.0.1:2020"
+	config.Common.LogPath = testClientLogFile
+	config.Client.CertPin = []string{testCertificatePin}
+	config.Client.RootCA = string(ca)
+	config.Server.RemoteNetwork = "tcp4"
+	config.Server.RemoteAddress = "localhost:2019"
+	config.Tunnel.MaxConns = 4
+	config.Proxy.Enabled = true
+	config.Proxy.Network = "tcp"
+	config.Proxy.Address = "127.0.0.1:2020"
 	return &config
 }
 
