@@ -95,10 +95,11 @@ type ClientConfig struct {
 	} `toml:"proxy"`
 
 	Portmaps []struct {
-		Enabled bool   `toml:"enabled"`
-		Network string `toml:"network"`
-		Address string `toml:"address"`
-		Target  string `toml:"target"`
+		Enabled       bool   `toml:"enabled"`
+		LocalNetwork  string `toml:"local_net"`
+		LocalAddress  string `toml:"local_addr"`
+		RemoteNetwork string `toml:"remote_net"`
+		RemoteAddress string `toml:"remote_addr"`
 	} `toml:"portmaps"`
 } // #nosec
 
