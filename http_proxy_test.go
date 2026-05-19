@@ -218,8 +218,8 @@ func TestHTTPProxy_Authenticate(t *testing.T) {
 		}()
 
 		clientCfg := testBuildClientConfig()
-		clientCfg.Front.Username = testProxyUsername
-		clientCfg.Front.Password = testProxyPassword
+		clientCfg.Proxy.Username = testProxyUsername
+		clientCfg.Proxy.Password = testProxyPassword
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
@@ -269,8 +269,8 @@ func TestHTTPProxy_Authenticate(t *testing.T) {
 		}()
 
 		clientCfg := testBuildClientConfig()
-		clientCfg.Front.Username = testProxyUsername
-		clientCfg.Front.Password = testProxyPassword
+		clientCfg.Proxy.Username = testProxyUsername
+		clientCfg.Proxy.Password = testProxyPassword
 
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)

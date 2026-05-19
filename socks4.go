@@ -116,10 +116,10 @@ func (c *Client) socks4CheckUserID(reader *bufio.Reader) bool {
 		userID = append(userID, b)
 	}
 	// compare user id
-	if c.frontUsername == "" {
+	if c.proxyUsername == "" {
 		return true
 	}
-	uid := []byte(c.frontUsername)
+	uid := []byte(c.proxyUsername)
 	if subtle.ConstantTimeCompare(uid, userID) != 1 {
 		c.logger.Errorf("invalid user id: %s", userID)
 		return false

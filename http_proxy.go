@@ -28,7 +28,7 @@ func (c *Client) serveHTTPRequest(conn net.Conn, reader *bufio.Reader) (*tunnel,
 }
 
 func (c *Client) httpProxyAuthenticate(conn net.Conn, req *http.Request) bool {
-	if c.frontUsername == "" && c.frontPassword == "" {
+	if c.proxyUsername == "" && c.proxyPassword == "" {
 		return true
 	}
 	authInfo := strings.Split(req.Header.Get("Proxy-Authorization"), " ")
@@ -51,8 +51,8 @@ func (c *Client) httpProxyAuthenticate(conn net.Conn, req *http.Request) bool {
 		}
 		user := []byte(userPass[0])
 		pass := []byte(userPass[1])
-		eUser := []byte(c.frontUsername)
-		ePass := []byte(c.frontPassword)
+		eUser := []byte(c.proxyUsername)
+		ePass := []byte(c.proxyPassword)
 		userErr := subtle.ConstantTimeCompare(user, eUser) != 1
 		passErr := subtle.ConstantTimeCompare(pass, ePass) != 1
 		if userErr || passErr {

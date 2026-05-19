@@ -103,7 +103,7 @@ func (c *Client) socks5NegotiateAuthMethod(conn net.Conn, reader *bufio.Reader) 
 	if err != nil {
 		return errors.Wrap(err, "failed to read authentication methods")
 	}
-	if c.frontUsername == "" && c.frontPassword == "" {
+	if c.proxyUsername == "" && c.proxyPassword == "" {
 		if !c.socks5HasAuthMethod(buf[:l], v5NotRequired) {
 			_, _ = conn.Write([]byte{version5, v5NoAcceptableMethods})
 			return errors.New("no acceptable authentication methods")
@@ -127,7 +127,7 @@ func (c *Client) socks5HasAuthMethod(methods []byte, method byte) bool {
 }
 
 func (c *Client) socks5Authenticate(conn net.Conn, reader *bufio.Reader) bool {
-	if c.frontUsername == "" && c.frontPassword == "" {
+	if c.proxyUsername == "" && c.proxyPassword == "" {
 		_, err := conn.Write([]byte{version5, v5NotRequired})
 		if err != nil {
 			c.logger.Error("failed to write authentication reply:", err)
@@ -151,8 +151,8 @@ func (c *Client) socks5Authenticate(conn net.Conn, reader *bufio.Reader) bool {
 		return false
 	}
 	// compare username and password
-	eUser := []byte(c.frontUsername)
-	ePass := []byte(c.frontPassword)
+	eUser := []byte(c.proxyUsername)
+	ePass := []byte(c.proxyPassword)
 	userErr := subtle.ConstantTimeCompare(username, eUser) != 1
 	passErr := subtle.ConstantTimeCompare(password, ePass) != 1
 	if userErr || passErr {
