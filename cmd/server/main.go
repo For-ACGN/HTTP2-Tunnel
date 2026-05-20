@@ -61,15 +61,12 @@ func main() {
 	server, err := h2tunnel.NewServer(ctx, &config)
 	checkError(err)
 
-	lg := log.New(os.Stdout, "", log.LstdFlags)
-	if config.TLS.Mode == h2tunnel.TLSModeACME {
-		lg.Println("[info] pre-provision certificate from acme server")
-	}
+	logger := log.New(os.Stdout, "", log.LstdFlags)
+	logger.Println("[info] calculate certificate public key hash")
 	list, err := server.CertPinning(ctx)
 	checkError(err)
-	lg.Println("[info] calculate certificate public key hash")
-	for _, item := range list {
-		lg.Printf("[info] %X\n", item)
+	for _, hash := range list {
+		logger.Printf("[info] %X\n", hash)
 	}
 
 	go func() {
