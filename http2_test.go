@@ -30,7 +30,7 @@ func TestHTTP2Simulation(t *testing.T) {
 	}()
 
 	clientCfg := testBuildClientConfig()
-	clientCfg.Client.PreConns = 0
+	clientCfg.Tunnel.MaxConns = 0
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
@@ -63,7 +63,7 @@ func TestHTTPServerSimulation(t *testing.T) {
 	}()
 
 	cfg := testBuildClientConfig()
-	certs, err := parseCertificatesPEM([]byte(cfg.Server.RootCA))
+	certs, err := parseCertificatesPEM([]byte(cfg.Client.RootCA))
 	require.NoError(t, err)
 	tlsConfig := &tls.Config{}
 	tlsConfig.RootCAs = x509.NewCertPool()

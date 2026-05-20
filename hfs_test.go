@@ -25,7 +25,7 @@ func TestHFS(t *testing.T) {
 	}()
 
 	cfg := testBuildClientConfig()
-	certs, err := parseCertificatesPEM([]byte(cfg.Server.RootCA))
+	certs, err := parseCertificatesPEM([]byte(cfg.Client.RootCA))
 	require.NoError(t, err)
 	tlsConfig := &tls.Config{}
 	tlsConfig.RootCAs = x509.NewCertPool()
