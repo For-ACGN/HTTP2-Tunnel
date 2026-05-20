@@ -1,11 +1,11 @@
 [common]
   pwd_hash = "" # execute "client -ph your_password"
-  log_path = "mix-socks.log"
+  log_path = "http2-tunnel.log"
 
 [http]
   network   = "tcp"
   address   = ":443"
-  timeout   = "15s"  # // TODO replace it
+  timeout   = "3m"
   max_conns = 10000
 
 [tls]
@@ -18,9 +18,6 @@
     cert_path = "certs/cert.pem"
     key_path  = "certs/key.pem"
 
-[tunnel]
-  max_buffer_size = 32768
-
 [web]
   mode = "proxy" # "proxy" or "static"
 
@@ -30,3 +27,6 @@
 
   [web.static]
     dir = "web"
+
+[tunnel]
+  max_buffer_size = 32768
