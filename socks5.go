@@ -72,7 +72,7 @@ func (c *Client) serveSOCKS5(conn net.Conn, reader *bufio.Reader) (*tunnel, erro
 		return nil, errors.New("failed to receive connect target")
 	}
 	// connect target
-	tun, err := c.connect("SOCKS5", "tcp", target)
+	tun, err := c.connect(c.ctx, "SOCKS5", "tcp", target)
 	if err != nil {
 		_, _ = conn.Write(v5ReplyConnectRefused)
 		return nil, errors.Wrap(err, "failed to connect target")

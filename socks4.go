@@ -87,7 +87,7 @@ func (c *Client) serveSOCKS4(conn net.Conn, reader *bufio.Reader) (*tunnel, erro
 	}
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	// connect target
-	tun, err := c.connect(proto, "tcp", target)
+	tun, err := c.connect(c.ctx, proto, "tcp", target)
 	if err != nil {
 		_, _ = conn.Write(v4ReplyRefused)
 		return nil, errors.Wrap(err, "failed to connect target")

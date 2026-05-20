@@ -81,7 +81,7 @@ func (c *Client) httpProxyFailedToAuth(conn net.Conn) {
 }
 
 func (c *Client) serveHTTPConnect(conn net.Conn, req *http.Request) (*tunnel, error) {
-	tun, err := c.connect("HTTP-Tunnel", "tcp", req.URL.Host)
+	tun, err := c.connect(c.ctx, "HTTP-Tunnel", "tcp", req.URL.Host)
 	if err != nil {
 		resp := http.Response{}
 		resp.StatusCode = http.StatusBadGateway
@@ -118,7 +118,7 @@ func (c *Client) serveHTTPForward(conn net.Conn, rd *bufio.Reader, req *http.Req
 	}
 	address := net.JoinHostPort(req.URL.Host, port)
 
-	tun, err := c.connect("HTTP-Forward", "tcp", address)
+	tun, err := c.connect(c.ctx, "HTTP-Forward", "tcp", address)
 	if err != nil {
 		_ = badResp.Write(conn)
 		return err
