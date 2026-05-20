@@ -44,6 +44,7 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		}
 		httpClient := http.Client{
 			Transport: &transport,
+			Timeout:   defaultClientTimeout,
 		}
 		resp, err := httpClient.Get("https://github.com/")
 		require.NoError(t, err)
@@ -51,6 +52,7 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		require.NoError(t, err)
 		t.Log(len(data))
 		t.Log(string(data))
+		httpClient.CloseIdleConnections()
 
 		err = client.Close()
 		require.NoError(t, err)
@@ -92,10 +94,12 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		}
 		httpClient := http.Client{
 			Transport: &transport,
+			Timeout:   defaultClientTimeout,
 		}
 		resp, err := httpClient.Get("https://invalid-fff17531.com/")
 		require.Error(t, err)
 		require.Nil(t, resp)
+		httpClient.CloseIdleConnections()
 
 		err = client.Close()
 		require.NoError(t, err)
@@ -142,6 +146,7 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		}
 		httpClient := http.Client{
 			Transport: &transport,
+			Timeout:   defaultClientTimeout,
 		}
 		resp, err := httpClient.Get("https://github.com/")
 		require.NoError(t, err)
@@ -149,6 +154,7 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		require.NoError(t, err)
 		t.Log(len(data))
 		t.Log(string(data))
+		httpClient.CloseIdleConnections()
 
 		err = client.Close()
 		require.NoError(t, err)
@@ -191,10 +197,12 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		}
 		httpClient := http.Client{
 			Transport: &transport,
+			Timeout:   defaultClientTimeout,
 		}
 		resp, err := httpClient.Get("https://github.com/")
 		require.ErrorContains(t, err, "no acceptable authentication methods")
 		require.Nil(t, resp)
+		httpClient.CloseIdleConnections()
 
 		err = client.Close()
 		require.NoError(t, err)
@@ -239,10 +247,12 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		}
 		httpClient := http.Client{
 			Transport: &transport,
+			Timeout:   defaultClientTimeout,
 		}
 		resp, err := httpClient.Get("https://github.com/")
 		require.ErrorContains(t, err, "authentication failed")
 		require.Nil(t, resp)
+		httpClient.CloseIdleConnections()
 
 		err = client.Close()
 		require.NoError(t, err)
