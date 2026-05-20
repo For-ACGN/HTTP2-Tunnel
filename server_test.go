@@ -27,8 +27,8 @@ func testRemoveServerLogFile(t *testing.T) {
 
 func testBuildServerConfig() *ServerConfig {
 	config := ServerConfig{}
-	config.Common.LogPath = testServerLogFile
 	config.Common.PassHash = testPassHash
+	config.Common.LogPath = testServerLogFile
 	config.HTTP.Network = "tcp"
 	config.HTTP.Address = "127.0.0.1:2019"
 	config.TLS.Mode = TLSModeStatic
@@ -60,7 +60,7 @@ func TestServer_CertPinning(t *testing.T) {
 	list, err := server.CertPinning(context.Background())
 	require.NoError(t, err)
 	require.Len(t, list, 1)
-	fmt.Printf("%X\n", list[0])
+	t.Logf("%X\n", list[0])
 
 	err = server.Close()
 	require.NoError(t, err)
@@ -104,17 +104,13 @@ func TestServer_handleConn(t *testing.T) {
 	client, err := NewClient(clientCfg)
 	require.NoError(t, err)
 
-	certs, err := parseCertificatesPEM([]byte(clientCfg.Server.RootCA))
+	certs, err := parseCertificatesPEM([]byte(clientCfg.Client.RootCA))
 	require.NoError(t, err)
 	tlsConfig := utls.Config{
 		NextProtos: []string{"h2", "http/1.1"},
 	}
 	tlsConfig.RootCAs = x509.NewCertPool()
 	tlsConfig.RootCAs.AddCert(certs[0])
-
-	URL := fmt.Sprintf("https://%s/", address)
-	req, err := http.NewRequest(http.MethodGet, URL, nil)
-	require.NoError(t, err)
 
 	transport := http2.Transport{
 		DialTLSContext: func(context.Context, string, string, *tls.Config) (net.Conn, error) {
@@ -131,13 +127,18 @@ func TestServer_handleConn(t *testing.T) {
 			return conn, nil
 		},
 	}
-
-	resp, err := transport.RoundTrip(req)
+	httpClient := http.Client{
+		Transport: &transport,
+		Timeout:   defaultClientTimeout,
+	}
+	URL := fmt.Sprintf("https://%s/", address)
+	resp, err := httpClient.Get(URL)
 	require.NoError(t, err)
 	require.Equal(t, "HTTP/2.0", resp.Proto)
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	t.Log(len(data))
+	t.Log(string(data))
 	transport.CloseIdleConnections()
 
 	err = client.Close()
@@ -161,7 +162,7 @@ func TestServer_Simulation(t *testing.T) {
 	}()
 
 	cfg := testBuildClientConfig()
-	certs, err := parseCertificatesPEM([]byte(cfg.Server.RootCA))
+	certs, err := parseCertificatesPEM([]byte(cfg.Client.RootCA))
 	require.NoError(t, err)
 	tlsConfig := &tls.Config{}
 	tlsConfig.RootCAs = x509.NewCertPool()
