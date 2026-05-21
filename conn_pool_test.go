@@ -34,13 +34,10 @@ func TestClient_DisablePreConn(t *testing.T) {
 	hijacked, err := client.Detect()
 	require.NoError(t, err)
 	require.False(t, hijacked)
+	client.Start()
+	client.Serve()
 	err = client.Login()
 	require.NoError(t, err)
-
-	go func() {
-		err := client.Serve()
-		require.NoError(t, err)
-	}()
 
 	transport := http.Transport{
 		Proxy: func(*http.Request) (*url.URL, error) {

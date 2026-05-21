@@ -32,10 +32,10 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
 
-		go func() {
-			err := client.Serve()
-			require.NoError(t, err)
-		}()
+		client.Start()
+		client.Serve()
+		err = client.Login()
+		require.NoError(t, err)
 
 		transport := http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) {
@@ -82,10 +82,10 @@ func TestSOCKS5_ServeSOCKS5(t *testing.T) {
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
 
-		go func() {
-			err := client.Serve()
-			require.NoError(t, err)
-		}()
+		client.Start()
+		client.Serve()
+		err = client.Login()
+		require.NoError(t, err)
 
 		transport := http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) {
@@ -132,10 +132,10 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
 
-		go func() {
-			err := client.Serve()
-			require.NoError(t, err)
-		}()
+		client.Start()
+		client.Serve()
+		err = client.Login()
+		require.NoError(t, err)
 
 		transport := http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) {
@@ -185,10 +185,10 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
 
-		go func() {
-			err := client.Serve()
-			require.NoError(t, err)
-		}()
+		client.Start()
+		client.Serve()
+		err = client.Login()
+		require.NoError(t, err)
 
 		transport := http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) {
@@ -233,10 +233,10 @@ func TestSOCKS5_Authenticate(t *testing.T) {
 		client, err := NewClient(clientCfg)
 		require.NoError(t, err)
 
-		go func() {
-			err := client.Serve()
-			require.NoError(t, err)
-		}()
+		client.Start()
+		client.Serve()
+		err = client.Login()
+		require.NoError(t, err)
 
 		transport := http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) {
