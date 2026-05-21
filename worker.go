@@ -58,7 +58,7 @@ func (c *Client) connector() {
 		c.wg.Done()
 	}()
 
-	if c.preConns == 0 {
+	if c.maxConns == 0 {
 		return
 	}
 	mRand := newMathRand()
@@ -84,7 +84,7 @@ func (c *Client) connector() {
 		// preconnect
 		select {
 		case <-time.After(delay):
-			if len(c.connCh) == c.preConns {
+			if len(c.connCh) == c.maxConns {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -113,7 +113,7 @@ func (c *Client) watcher() {
 		c.wg.Done()
 	}()
 
-	if c.preConns == 0 {
+	if c.maxConns == 0 {
 		return
 	}
 	mRand := newMathRand()
