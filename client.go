@@ -177,13 +177,10 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		proxyPassword: config.Proxy.Password,
 		portmappers:   portmappers,
 
-		randCh: make(chan []byte, 128+maxConns),
+		randCh: make(chan []byte, 4*maxConns),
 		connCh: make(chan net.Conn, maxConns),
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
-	// start secret random generator
-	client.wg.Add(1)
-	go client.generator()
 	return &client, nil
 }
 
@@ -318,8 +315,11 @@ func (c *Client) Logout() error {
 	return simulateHTTP2GoAway(conn)
 }
 
-// Serve is used to serve front proxy server and portmaps.
-func (c *Client) Serve() error {
+// Start is used to start background workers.
+func (c *Client) Start() {
+	// start secret random generator
+	c.wg.Add(1)
+	go c.generator()
 	// start pre-connection connector
 	num := 2 + newMathRand().Intn(4)
 	for i := 0; i < num; i++ {
@@ -331,13 +331,38 @@ func (c *Client) Serve() error {
 		c.wg.Add(1)
 		go c.watcher()
 	}
-	c.logger.Infof("front proxy server listening on %s", c.proxyListener.Addr())
+}
+
+// Serve is used to start front proxy server and portmaps.
+func (c *Client) Serve() {
+	if c.proxyListener != nil {
+		go func() {
+			err := c.ServeProxy(c.proxyListener)
+			if err != nil {
+				c.logger.Error("failed to serve proxy:", err)
+			}
+		}()
+	}
+	for i := 0; i < len(c.portmappers); i++ {
+		pm := c.portmappers[i]
+		go func() {
+			err := c.ServePortmap(pm.listener, pm.network, pm.address)
+			if err != nil {
+				c.logger.Error("failed to serve portmap:", err)
+			}
+		}()
+	}
+}
+
+// ServeProxy is used to serve a listener for handle front proxy connection.
+func (c *Client) ServeProxy(listener net.Listener) error {
+	c.logger.Infof("front proxy server listening on %s", listener.Addr())
 	var tempDelay time.Duration
 	maxDelay := time.Second
 	for {
-		conn, err := c.proxyListener.Accept()
+		conn, err := listener.Accept()
 		if err == nil {
-			go c.handleConn(conn)
+			go c.handleProxyConn(conn)
 			continue
 		}
 		if c.shuttingDown() {
@@ -360,7 +385,7 @@ func (c *Client) Serve() error {
 	}
 }
 
-func (c *Client) handleConn(conn net.Conn) {
+func (c *Client) handleProxyConn(conn net.Conn) {
 	var success bool
 	defer func() {
 		if !success {
@@ -473,6 +498,49 @@ func formatDuration(d time.Duration) string {
 		s = fmt.Sprintf("%.1fm", float64(d)/float64(time.Minute))
 	}
 	return strings.ReplaceAll(s, ".0", "")
+}
+
+func (c *Client) ServePortmap(listener net.Listener, network, address string) error {
+	c.logger.Infof("front proxy server listening on %s", listener.Addr())
+	var tempDelay time.Duration
+	maxDelay := time.Second
+	for {
+		conn, err := listener.Accept()
+		if err == nil {
+			go c.handlePortmapConn(conn, network, address)
+			continue
+		}
+		if c.shuttingDown() {
+			return nil
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if tempDelay == 0 {
+				tempDelay = 5 * time.Millisecond
+			} else {
+				tempDelay *= 2
+			}
+			if tempDelay > maxDelay {
+				tempDelay = maxDelay
+			}
+			c.logger.Warningf("accept error: %s; retrying in %v", err, tempDelay)
+			time.Sleep(tempDelay)
+			continue
+		}
+		return err
+	}
+}
+
+func (c *Client) handlePortmapConn(conn net.Conn, network, address string) {
+	var success bool
+	defer func() {
+		if !success {
+			_ = conn.Close()
+		}
+	}()
+	remote, err := c.connect(c.ctx, "portmap", network, address)
+	if err != nil {
+		return
+	}
 }
 
 // Connect is used to connect target though the tunnel.
