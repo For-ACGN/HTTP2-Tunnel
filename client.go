@@ -433,75 +433,12 @@ func (c *Client) handleProxyConn(conn net.Conn) {
 		success = true
 		return
 	}
-
-	// start forward connection data
-	go func() {
-		// not append connection history to the log file
-		lg, _ := newLogger("")
-		lg.Infof(
-			"{%s} <%s> [%dms] connect %s",
-			tun.Protocol, tun.IPType, tun.Elapsed.Milliseconds(), tun.Address,
-		)
-
-		var (
-			numSend int64
-			numRecv int64
-		)
-		wg := sync.WaitGroup{}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { _ = conn.Close() }()
-			buffer := make([]byte, c.bufferSize)
-			numRecv, _ = io.CopyBuffer(conn, tun, buffer)
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { _ = tun.Close() }()
-			buffer := make([]byte, c.bufferSize)
-			numSend, _ = io.CopyBuffer(tun, conn, buffer)
-		}()
-		wg.Wait()
-
-		lg.Infof(
-			"{%s} <%s> disconnect %s (%s/%s) [%s]",
-			tun.Protocol, tun.IPType, tun.Address,
-			strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
-			strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
-			formatDuration(time.Since(tun.Establish)),
-		)
-
-		// update status
-		c.counterMu.Lock()
-		defer c.counterMu.Unlock()
-		c.numConns++
-		c.numSend += numSend
-		c.numRecv += numRecv
-	}()
+	c.forward(conn, tun)
 	success = true
 }
 
-func formatDuration(d time.Duration) string {
-	var s string
-	switch {
-	case d < time.Second:
-		m := d.Milliseconds()
-		if m > 0 {
-			s = fmt.Sprintf("%dms", m)
-		} else {
-			s = "0s"
-		}
-	case d < time.Minute:
-		s = fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
-	default:
-		s = fmt.Sprintf("%.1fm", float64(d)/float64(time.Minute))
-	}
-	return strings.ReplaceAll(s, ".0", "")
-}
-
 func (c *Client) ServePortmap(listener net.Listener, network, address string) error {
-	c.logger.Infof("front proxy server listening on %s", listener.Addr())
+	c.logger.Infof("portmap server listening on %s", listener.Addr())
 	var tempDelay time.Duration
 	maxDelay := time.Second
 	for {
@@ -537,10 +474,86 @@ func (c *Client) handlePortmapConn(conn net.Conn, network, address string) {
 			_ = conn.Close()
 		}
 	}()
-	remote, err := c.connect(c.ctx, "portmap", network, address)
+
+	tun, err := c.connect(c.ctx, "Portmap", network, address)
 	if err != nil {
+		// not append error that contain private data to the log file
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "no such host"):
+		default:
+			c.logger.Warningf("failed to create tunnel: %s", err)
+			return
+		}
+		lg, _ := newLogger("")
+		lg.Warningf("failed to create tunnel: %s", err)
 		return
 	}
+	c.forward(conn, tun)
+	success = true
+}
+
+func (c *Client) forward(conn net.Conn, tun *tunnel) {
+	// not append connection history to the log file
+	logger, _ := newLogger("")
+	logger.Infof(
+		"{%s} <%s> [%dms] connect %s",
+		tun.Protocol, tun.IPType, tun.Elapsed.Milliseconds(), tun.Address,
+	)
+
+	var (
+		numSend int64
+		numRecv int64
+	)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = conn.Close() }()
+		buffer := make([]byte, c.bufferSize)
+		numRecv, _ = io.CopyBuffer(conn, tun, buffer)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { _ = tun.Close() }()
+		buffer := make([]byte, c.bufferSize)
+		numSend, _ = io.CopyBuffer(tun, conn, buffer)
+	}()
+	wg.Wait()
+
+	logger.Infof(
+		"{%s} <%s> disconnect %s (%s/%s) [%s]",
+		tun.Protocol, tun.IPType, tun.Address,
+		strings.ReplaceAll(humanize.IBytes(uint64(numSend)), "i", ""), // #nosec G115
+		strings.ReplaceAll(humanize.IBytes(uint64(numRecv)), "i", ""), // #nosec G115
+		formatDuration(time.Since(tun.Establish)),
+	)
+
+	// update status
+	c.counterMu.Lock()
+	defer c.counterMu.Unlock()
+	c.numConns++
+	c.numSend += numSend
+	c.numRecv += numRecv
+}
+
+func formatDuration(d time.Duration) string {
+	var s string
+	switch {
+	case d < time.Second:
+		m := d.Milliseconds()
+		if m > 0 {
+			s = fmt.Sprintf("%dms", m)
+		} else {
+			s = "0s"
+		}
+	case d < time.Minute:
+		s = fmt.Sprintf("%.1fs", float64(d)/float64(time.Second))
+	default:
+		s = fmt.Sprintf("%.1fm", float64(d)/float64(time.Minute))
+	}
+	return strings.ReplaceAll(s, ".0", "")
 }
 
 // Connect is used to connect target though the tunnel.
