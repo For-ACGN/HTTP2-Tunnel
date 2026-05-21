@@ -72,11 +72,11 @@ func main() {
 	checkError(err)
 
 	// read Root CA file if it exists
-	rootCA := config.Server.RootCA
+	rootCA := config.Client.RootCA
 	if rootCA != "" {
 		ca, err := os.ReadFile(rootCA) // #nosec
 		checkError(err)
-		config.Server.RootCA = string(ca)
+		config.Client.RootCA = string(ca)
 	}
 
 	// create client from config
@@ -84,7 +84,7 @@ func main() {
 	checkError(err)
 
 	// detect the server has been hijacked.
-	lg := log.New(os.Stdout, "", log.LstdFlags)
+	logger := log.New(os.Stdout, "", log.LstdFlags)
 	var reached bool
 	for i := 0; i < 3; i++ {
 		hijacked, err := client.Detect()
@@ -93,7 +93,7 @@ func main() {
 				warn(err.Error())
 				os.Exit(1)
 			}
-			lg.Println("[error]", err)
+			logger.Println("[error]", err)
 			continue
 		} else {
 			reached = true
@@ -101,31 +101,27 @@ func main() {
 		}
 	}
 	if !reached {
-		lg.Println("[error] the server cannot be reached")
+		logger.Println("[error] the server cannot be reached")
 		err = client.Close()
 		checkError(err)
 		return
 	}
 
 	// start core workers
-	go func() {
-		err := client.Serve()
-		checkError(err)
-	}()
-
-	// give some time for the connector
-	time.Sleep(time.Second)
+	client.Start()
+	time.Sleep(250 * time.Millisecond)
 
 	// client.Login() will use 3-RTT, the time is similar as
 	// connect latency when connect a target with HTTPS(TLS 1.3)
-	go func() {
-		now := time.Now()
-		err = client.Login()
-		checkError(err)
-		latency := time.Since(now).Milliseconds()
-		logger := log.New(os.Stdout, "", log.LstdFlags)
-		logger.Printf("[info] connect latency: %dms\n", latency)
-	}()
+	now := time.Now()
+	err = client.Login()
+	checkError(err)
+	latency := time.Since(now).Milliseconds()
+	logger.Printf("[info] connect latency: %dms\n", latency)
+
+	// give some time for pre-connection
+	time.Sleep(time.Second)
+	client.Serve()
 
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt)
