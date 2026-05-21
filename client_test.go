@@ -2,6 +2,7 @@ package h2tunnel
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"net/url"
@@ -150,7 +151,7 @@ func TestClient_Logout(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClient_Proxy(t *testing.T) {
+func TestClient_FrontProxy(t *testing.T) {
 	defer func() {
 		testRemoveClientLogFile(t)
 		testRemoveServerLogFile(t)
@@ -171,13 +172,10 @@ func TestClient_Proxy(t *testing.T) {
 	hijacked, err := client.Detect()
 	require.NoError(t, err)
 	require.False(t, hijacked)
+	client.Start()
+	client.Serve()
 	err = client.Login()
 	require.NoError(t, err)
-
-	go func() {
-		err := client.Serve()
-		require.NoError(t, err)
-	}()
 
 	transport := http.Transport{
 		Proxy: func(*http.Request) (*url.URL, error) {
@@ -189,6 +187,74 @@ func TestClient_Proxy(t *testing.T) {
 		Timeout:   defaultClientTimeout,
 	}
 	resp, err := httpClient.Get("https://github.com/")
+	require.NoError(t, err)
+
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "HTTP/2.0", resp.Proto)
+	t.Log(len(data))
+	t.Log(string(data))
+	httpClient.CloseIdleConnections()
+
+	err = client.Logout()
+	require.NoError(t, err)
+	err = client.Close()
+	require.NoError(t, err)
+
+	err = server.Close()
+	require.NoError(t, err)
+}
+
+func TestClient_Portmap(t *testing.T) {
+	defer func() {
+		testRemoveClientLogFile(t)
+		testRemoveServerLogFile(t)
+	}()
+
+	serverCfg := testBuildServerConfig()
+	server, err := NewServer(context.Background(), serverCfg)
+	require.NoError(t, err)
+
+	go func() {
+		err := server.Serve()
+		require.NoError(t, err)
+	}()
+
+	clientCfg := testBuildClientConfig()
+	clientCfg.Portmaps = append(clientCfg.Portmaps, struct {
+		Enabled       bool   `toml:"enabled"`
+		LocalNetwork  string `toml:"local_net"`
+		LocalAddress  string `toml:"local_addr"`
+		RemoteNetwork string `toml:"remote_net"`
+		RemoteAddress string `toml:"remote_addr"`
+	}{
+		Enabled:       true,
+		LocalNetwork:  "tcp",
+		LocalAddress:  "127.0.0.1:4001",
+		RemoteNetwork: "tcp",
+		RemoteAddress: "github.com:443",
+	})
+	client, err := NewClient(clientCfg)
+	require.NoError(t, err)
+	hijacked, err := client.Detect()
+	require.NoError(t, err)
+	require.False(t, hijacked)
+	client.Start()
+	client.Serve()
+	err = client.Login()
+	require.NoError(t, err)
+
+	transport := http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+		ForceAttemptHTTP2: true,
+	}
+	httpClient := http.Client{
+		Transport: &transport,
+		Timeout:   defaultClientTimeout,
+	}
+	resp, err := httpClient.Get("https://127.0.0.1:4001/")
 	require.NoError(t, err)
 
 	data, err := io.ReadAll(resp.Body)
@@ -228,16 +294,14 @@ func TestClient_Connect(t *testing.T) {
 	hijacked, err := client.Detect()
 	require.NoError(t, err)
 	require.False(t, hijacked)
+	client.Start()
+	client.Serve()
 	err = client.Login()
 	require.NoError(t, err)
 
-	go func() {
-		err := client.Serve()
-		require.NoError(t, err)
-	}()
-
 	transport := http.Transport{
-		DialContext: client.Connect,
+		DialContext:       client.Connect,
+		ForceAttemptHTTP2: true,
 	}
 	httpClient := http.Client{
 		Transport: &transport,
@@ -247,6 +311,7 @@ func TestClient_Connect(t *testing.T) {
 	require.NoError(t, err)
 	data, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
+	require.Equal(t, "HTTP/2.0", resp.Proto)
 	t.Log(len(data))
 	t.Log(string(data))
 	httpClient.CloseIdleConnections()
