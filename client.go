@@ -181,6 +181,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		connCh: make(chan net.Conn, maxConns),
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
+	// start secret random generator
+	client.wg.Add(1)
+	go client.generator()
 	return &client, nil
 }
 
@@ -317,9 +320,6 @@ func (c *Client) Logout() error {
 
 // Start is used to start background workers.
 func (c *Client) Start() {
-	// start secret random generator
-	c.wg.Add(1)
-	go c.generator()
 	// start pre-connection connector
 	num := 2 + newMathRand().Intn(4)
 	for i := 0; i < num; i++ {
@@ -412,16 +412,7 @@ func (c *Client) handleProxyConn(conn net.Conn) {
 		tun, err = c.serveHTTPRequest(conn, reader)
 	}
 	if err != nil {
-		// not append error that contain private data to the log file
-		errStr := err.Error()
-		switch {
-		case strings.Contains(errStr, "no such host"):
-		default:
-			c.logger.Warningf("failed to create tunnel: %s", err)
-			return
-		}
-		lg, _ := newLogger("")
-		lg.Warningf("failed to create tunnel: %s", err)
+		c.handleConnectError(err)
 		return
 	}
 
@@ -437,6 +428,7 @@ func (c *Client) handleProxyConn(conn net.Conn) {
 	success = true
 }
 
+// ServePortmap is used to server a portmap listener with target network and address.
 func (c *Client) ServePortmap(listener net.Listener, network, address string) error {
 	c.logger.Infof("portmap server listening on %s", listener.Addr())
 	var tempDelay time.Duration
@@ -477,16 +469,7 @@ func (c *Client) handlePortmapConn(conn net.Conn, network, address string) {
 
 	tun, err := c.connect(c.ctx, "Portmap", network, address)
 	if err != nil {
-		// not append error that contain private data to the log file
-		errStr := err.Error()
-		switch {
-		case strings.Contains(errStr, "no such host"):
-		default:
-			c.logger.Warningf("failed to create tunnel: %s", err)
-			return
-		}
-		lg, _ := newLogger("")
-		lg.Warningf("failed to create tunnel: %s", err)
+		c.handleConnectError(err)
 		return
 	}
 	c.forward(conn, tun)
@@ -560,16 +543,7 @@ func formatDuration(d time.Duration) string {
 func (c *Client) Connect(ctx context.Context, network, address string) (net.Conn, error) {
 	tun, err := c.connect(ctx, "Direct", network, address)
 	if err != nil {
-		// not append error that contain private data to the log file
-		errStr := err.Error()
-		switch {
-		case strings.Contains(errStr, "no such host"):
-		default:
-			c.logger.Warningf("failed to create tunnel: %s", err)
-			return nil, err
-		}
-		lg, _ := newLogger("")
-		lg.Warningf("failed to create tunnel: %s", err)
+		c.handleConnectError(err)
 		return nil, err
 	}
 	// not append connection history to the log file
@@ -671,6 +645,19 @@ func (c *Client) connect(ctx context.Context, protocol, network, address string)
 	tun.Elapsed = time.Since(now)
 	tun.Establish = time.Now()
 	return tun, nil
+}
+
+func (c *Client) handleConnectError(err error) {
+	// not append error that contain private data to the log file
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "no such host"):
+	default:
+		c.logger.Warningf("failed to create tunnel: %s", err)
+		return
+	}
+	lg, _ := newLogger("")
+	lg.Warningf("failed to create tunnel: %s", err)
 }
 
 // Close is used to close http2-tunnel client.
