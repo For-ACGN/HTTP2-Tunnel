@@ -28,7 +28,7 @@ func TestDataFrame(t *testing.T) {
 		aead := testNewAEAD(t)
 		plaintext := []byte("hello, world! this is a secret message.")
 		frame1 := newDataFrame(id, aead)
-		frame1.SetData(plaintext)
+		frame1.Data = plaintext
 
 		var buf bytes.Buffer
 		err := frame1.Encode(&buf)
@@ -37,13 +37,13 @@ func TestDataFrame(t *testing.T) {
 		frame2 := newDataFrame(id, aead)
 		err = frame2.Decode(&buf)
 		require.NoError(t, err)
-		require.Equal(t, plaintext, frame2.GetData())
+		require.Equal(t, plaintext, frame2.Data)
 	})
 
 	t.Run("empty plaintext", func(t *testing.T) {
 		aead := testNewAEAD(t)
 		frame1 := newDataFrame(id, aead)
-		frame1.SetData([]byte{})
+		frame1.Data = []byte{}
 
 		var buf bytes.Buffer
 		err := frame1.Encode(&buf)
@@ -52,7 +52,7 @@ func TestDataFrame(t *testing.T) {
 		frame2 := newDataFrame(id, aead)
 		err = frame2.Decode(&buf)
 		require.NoError(t, err)
-		require.Empty(t, frame2.GetData())
+		require.Empty(t, frame2.Data)
 	})
 
 	t.Run("large payload", func(t *testing.T) {
@@ -62,7 +62,7 @@ func TestDataFrame(t *testing.T) {
 		require.NoError(t, err)
 
 		frame1 := newDataFrame(id, aead)
-		frame1.SetData(plaintext)
+		frame1.Data = plaintext
 
 		var buf bytes.Buffer
 		err = frame1.Encode(&buf)
@@ -71,13 +71,13 @@ func TestDataFrame(t *testing.T) {
 		frame2 := newDataFrame(id, aead)
 		err = frame2.Decode(&buf)
 		require.NoError(t, err)
-		require.Equal(t, plaintext, frame2.GetData())
+		require.Equal(t, plaintext, frame2.Data)
 	})
 
 	t.Run("tampered ciphertext", func(t *testing.T) {
 		aead := testNewAEAD(t)
 		frame1 := newDataFrame(id, aead)
-		frame1.SetData([]byte("integrity test"))
+		frame1.Data = []byte("integrity test")
 
 		var buf bytes.Buffer
 		err := frame1.Encode(&buf)

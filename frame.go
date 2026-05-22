@@ -185,8 +185,9 @@ func (f *shapingFrame) Decode(r io.Reader) error {
 type dataFrame struct {
 	id     sessionID
 	aead   cipher.AEAD
-	data   []byte
 	buffer []byte
+
+	Data []byte
 }
 
 func newDataFrame(id sessionID, aead cipher.AEAD) *dataFrame {
@@ -198,7 +199,7 @@ func newDataFrame(id sessionID, aead cipher.AEAD) *dataFrame {
 }
 
 func (f *dataFrame) Encode(w io.Writer) error {
-	size := gcmNonceSize + len(f.data) + f.aead.Overhead()
+	size := gcmNonceSize + len(f.Data) + f.aead.Overhead()
 	buffer := make([]byte, 1+len(f.id)+2+size)
 	buffer[0] = frameData
 	copy(buffer[1:], f.id[:])
@@ -210,7 +211,7 @@ func (f *dataFrame) Encode(w io.Writer) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to generate nonce")
 	}
-	f.aead.Seal(dst, nonce, f.data, nil)
+	f.aead.Seal(dst, nonce, f.Data, nil)
 	_, err = w.Write(buffer)
 	return err
 }
@@ -242,17 +243,9 @@ func (f *dataFrame) Decode(r io.Reader) error {
 	}
 	nonce := payload[:gcmNonceSize]
 	ciphertext := payload[gcmNonceSize:]
-	f.data, err = f.aead.Open(ciphertext[:0], nonce, ciphertext, nil)
+	f.Data, err = f.aead.Open(ciphertext[:0], nonce, ciphertext, nil)
 	if err != nil {
 		return errors.Wrap(err, "failed to decrypt data payload")
 	}
 	return nil
-}
-
-func (f *dataFrame) SetData(data []byte) {
-	f.data = data
-}
-
-func (f *dataFrame) GetData() []byte {
-	return f.data
 }
