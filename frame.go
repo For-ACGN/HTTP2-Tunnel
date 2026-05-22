@@ -198,20 +198,20 @@ func newDataFrame(id sessionID, aead cipher.AEAD) *dataFrame {
 }
 
 func (f *dataFrame) Encode(w io.Writer) error {
-	nonce := make([]byte, gcmNonceSize)
+	size := gcmNonceSize + len(f.data) + f.aead.Overhead()
+	buffer := make([]byte, 1+len(f.id)+2+size)
+	buffer[0] = frameData
+	copy(buffer[1:], f.id[:])
+	binary.BigEndian.PutUint16(buffer[1+len(f.id):], uint16(size)) // #nosec G115
+	payload := buffer[1+len(f.id)+2:]
+	dst := payload[gcmNonceSize:gcmNonceSize]
+	nonce := payload[:gcmNonceSize]
 	_, err := rand.Read(nonce)
 	if err != nil {
 		return errors.Wrap(err, "failed to generate nonce")
 	}
-	ciphertext := f.aead.Seal(nil, nonce, f.data, f.id[:])
-	payload := append(nonce, ciphertext...)
-
-	buf := bytes.NewBuffer(make([]byte, 0, 1+len(f.id)+2+len(payload)))
-	buf.WriteByte(frameData)
-	buf.Write(f.id[:])
-	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(len(payload)))) // #nosec G115
-	buf.Write(payload)
-	_, err = buf.WriteTo(w)
+	f.aead.Seal(dst, nonce, f.data, nil)
+	_, err = w.Write(buffer)
 	return err
 }
 
@@ -242,11 +242,10 @@ func (f *dataFrame) Decode(r io.Reader) error {
 	}
 	nonce := payload[:gcmNonceSize]
 	ciphertext := payload[gcmNonceSize:]
-	plaintext, err := f.aead.Open(nil, nonce, ciphertext, f.id[:])
+	f.data, err = f.aead.Open(ciphertext[:0], nonce, ciphertext, nil)
 	if err != nil {
 		return errors.Wrap(err, "failed to decrypt data payload")
 	}
-	f.data = plaintext
 	return nil
 }
 
