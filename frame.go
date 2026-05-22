@@ -2,6 +2,8 @@ package h2tunnel
 
 import (
 	"bytes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/binary"
 	"io"
 
@@ -12,7 +14,10 @@ const (
 	framePing = iota + 1
 	frameSetting
 	frameShaping
+	frameData
 )
+
+const gcmNonceSize = 12
 
 // frame is the be transported over the tunnel.
 type frame interface {
@@ -167,4 +172,88 @@ func (f *shapingFrame) Decode(r io.Reader) error {
 		return errors.Wrap(err, "failed to read shaping padding data")
 	}
 	return nil
+}
+
+// ---------------------------------------- data ----------------------------------------
+
+// +------+------------+--------+--------------+
+// | type | session id | length | session data |
+// +------+------------+--------+--------------+
+// | byte |  16 byte   | uint16 |     var      |
+// +------+------------+--------+--------------+
+
+type dataFrame struct {
+	id     sessionID
+	aead   cipher.AEAD
+	data   []byte
+	buffer []byte
+}
+
+func newDataFrame(id sessionID, aead cipher.AEAD) *dataFrame {
+	return &dataFrame{
+		id:     id,
+		aead:   aead,
+		buffer: make([]byte, 2),
+	}
+}
+
+func (f *dataFrame) Encode(w io.Writer) error {
+	nonce := make([]byte, gcmNonceSize)
+	_, err := rand.Read(nonce)
+	if err != nil {
+		return errors.Wrap(err, "failed to generate nonce")
+	}
+	ciphertext := f.aead.Seal(nil, nonce, f.data, f.id[:])
+	payload := append(nonce, ciphertext...)
+
+	buf := bytes.NewBuffer(make([]byte, 0, 1+len(f.id)+2+len(payload)))
+	buf.WriteByte(frameData)
+	buf.Write(f.id[:])
+	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(len(payload)))) // #nosec G115
+	buf.Write(payload)
+	_, err = buf.WriteTo(w)
+	return err
+}
+
+func (f *dataFrame) Decode(r io.Reader) error {
+	_, err := io.ReadFull(r, f.buffer[:1])
+	if err != nil {
+		return errors.Wrap(err, "failed to read frame type")
+	}
+	if f.buffer[0] != frameData {
+		return errors.New("invalid frame type about data")
+	}
+	_, err = io.ReadFull(r, f.id[:])
+	if err != nil {
+		return errors.Wrap(err, "failed to read session id")
+	}
+	_, err = io.ReadFull(r, f.buffer[:2])
+	if err != nil {
+		return errors.Wrap(err, "failed to read data payload length")
+	}
+	length := binary.BigEndian.Uint16(f.buffer[:2])
+	payload := make([]byte, length)
+	_, err = io.ReadFull(r, payload)
+	if err != nil {
+		return errors.Wrap(err, "failed to read data payload")
+	}
+	if len(payload) < gcmNonceSize {
+		return errors.New("invalid data payload length")
+	}
+	nonce := payload[:gcmNonceSize]
+	ciphertext := payload[gcmNonceSize:]
+	plaintext, err := f.aead.Open(nil, nonce, ciphertext, f.id[:])
+	if err != nil {
+		return errors.Wrap(err, "failed to decrypt data payload")
+	}
+	f.data = plaintext
+	return nil
+}
+
+func (f *dataFrame) SetData(data []byte) {
+	f.data = data
+}
+
+func (f *dataFrame) GetData() []byte {
+	return f.data
 }
