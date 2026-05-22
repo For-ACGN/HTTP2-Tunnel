@@ -31,25 +31,28 @@ type frame interface {
 
 var pingPadding = bytes.Repeat([]byte{0}, 16)
 
-type pingFrame struct{}
-
-func newPingFrame() *pingFrame {
-	return new(pingFrame)
+type pingFrame struct {
+	buffer []byte
 }
 
-func (p *pingFrame) Encode(b *bytes.Buffer) error {
+func newPingFrame() *pingFrame {
+	return &pingFrame{
+		buffer: make([]byte, 1),
+	}
+}
+
+func (f *pingFrame) Encode(b *bytes.Buffer) error {
 	b.WriteByte(framePing)
 	b.Write(pingPadding)
 	return nil
 }
 
-func (p *pingFrame) Decode(r io.Reader) error {
-	typ := make([]byte, 1)
-	_, err := r.Read(typ)
+func (f *pingFrame) Decode(r io.Reader) error {
+	_, err := io.ReadFull(r, f.buffer)
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
-	if typ[0] != framePing {
+	if f.buffer[0] != framePing {
 		return errors.New("invalid frame type about ping")
 	}
 	_, err = io.CopyN(io.Discard, r, int64(len(pingPadding)))
@@ -70,25 +73,28 @@ func (p *pingFrame) Decode(r io.Reader) error {
 
 var settingPadding = bytes.Repeat([]byte{0}, 8)
 
-type settingFrame struct{}
-
-func newSettingFrame() *settingFrame {
-	return new(settingFrame)
+type settingFrame struct {
+	buffer []byte
 }
 
-func (s *settingFrame) Encode(b *bytes.Buffer) error {
+func newSettingFrame() *settingFrame {
+	return &settingFrame{
+		buffer: make([]byte, 1),
+	}
+}
+
+func (f *settingFrame) Encode(b *bytes.Buffer) error {
 	b.WriteByte(frameSetting)
 	b.Write(settingPadding)
 	return nil
 }
 
-func (s *settingFrame) Decode(r io.Reader) error {
-	typ := make([]byte, 1)
-	_, err := r.Read(typ)
+func (f *settingFrame) Decode(r io.Reader) error {
+	_, err := io.ReadFull(r, f.buffer)
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
-	if typ[0] != frameSetting {
+	if f.buffer[0] != frameSetting {
 		return errors.New("invalid frame type about setting")
 	}
 	_, err = io.CopyN(io.Discard, r, int64(len(settingPadding)))
@@ -118,34 +124,38 @@ func newShapingFrame(length uint16) *shapingFrame {
 	}
 	return &shapingFrame{
 		length: length - 3,
-		buffer: make([]byte, 3),
+		buffer: make([]byte, 2),
 	}
 }
 
-func (s *shapingFrame) Encode(b *bytes.Buffer) error {
-	if s.cache != nil {
-		b.Write(s.cache)
+func (f *shapingFrame) Encode(b *bytes.Buffer) error {
+	if f.cache != nil {
+		b.Write(f.cache)
 		return nil
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, 3+s.length))
+	buf := bytes.NewBuffer(make([]byte, 0, 3+f.length))
 	buf.WriteByte(frameShaping)
-	buf.Write(binary.BigEndian.AppendUint16(nil, s.length))
-	buf.Write(bytes.Repeat([]byte{0}, int(s.length)))
+	buf.Write(binary.BigEndian.AppendUint16(nil, f.length))
+	buf.Write(bytes.Repeat([]byte{0}, int(f.length)))
 	o := buf.Bytes()
 	b.Write(o)
-	s.cache = o
+	f.cache = o
 	return nil
 }
 
-func (s *shapingFrame) Decode(r io.Reader) error {
-	_, err := io.ReadFull(r, s.buffer)
+func (f *shapingFrame) Decode(r io.Reader) error {
+	_, err := io.ReadFull(r, f.buffer[:1])
 	if err != nil {
-		return errors.Wrap(err, "failed to read shaping frame header")
+		return errors.Wrap(err, "failed to read frame type")
 	}
-	if s.buffer[0] != frameShaping {
+	if f.buffer[0] != frameShaping {
 		return errors.New("invalid frame type about shaping")
 	}
-	length := binary.BigEndian.Uint16(s.buffer[1:3])
+	_, err = io.ReadFull(r, f.buffer[:2])
+	if err != nil {
+		return errors.Wrap(err, "failed to read shaping padding length")
+	}
+	length := binary.BigEndian.Uint16(f.buffer[:2])
 	_, err = io.CopyN(io.Discard, r, int64(length))
 	if err != nil {
 		return errors.Wrap(err, "failed to read shaping padding data")
