@@ -16,7 +16,7 @@ const (
 
 // frame is the be transported over the tunnel.
 type frame interface {
-	Encode(b *bytes.Buffer) error
+	Encode(w io.Writer) error
 	Decode(r io.Reader) error
 }
 
@@ -41,10 +41,13 @@ func newPingFrame() *pingFrame {
 	}
 }
 
-func (f *pingFrame) Encode(b *bytes.Buffer) error {
-	b.WriteByte(framePing)
-	b.Write(pingPadding)
-	return nil
+func (f *pingFrame) Encode(w io.Writer) error {
+	_, err := w.Write([]byte{framePing})
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(pingPadding)
+	return err
 }
 
 func (f *pingFrame) Decode(r io.Reader) error {
@@ -83,10 +86,13 @@ func newSettingFrame() *settingFrame {
 	}
 }
 
-func (f *settingFrame) Encode(b *bytes.Buffer) error {
-	b.WriteByte(frameSetting)
-	b.Write(settingPadding)
-	return nil
+func (f *settingFrame) Encode(w io.Writer) error {
+	_, err := w.Write([]byte{frameSetting})
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(settingPadding)
+	return err
 }
 
 func (f *settingFrame) Decode(r io.Reader) error {
@@ -128,19 +134,19 @@ func newShapingFrame(length uint16) *shapingFrame {
 	}
 }
 
-func (f *shapingFrame) Encode(b *bytes.Buffer) error {
+func (f *shapingFrame) Encode(w io.Writer) error {
 	if f.cache != nil {
-		b.Write(f.cache)
-		return nil
+		_, err := w.Write(f.cache)
+		return err
 	}
 	buf := bytes.NewBuffer(make([]byte, 0, 3+f.length))
 	buf.WriteByte(frameShaping)
 	buf.Write(binary.BigEndian.AppendUint16(nil, f.length))
 	buf.Write(bytes.Repeat([]byte{0}, int(f.length)))
-	o := buf.Bytes()
-	b.Write(o)
-	f.cache = o
-	return nil
+	b := buf.Bytes()
+	f.cache = b
+	_, err := w.Write(b)
+	return err
 }
 
 func (f *shapingFrame) Decode(r io.Reader) error {
