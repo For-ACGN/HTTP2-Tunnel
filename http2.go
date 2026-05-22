@@ -44,14 +44,14 @@ func simulateHTTP2Client(conn net.Conn, preface []byte) error {
 	}
 
 	// simulate process header
-	time.Sleep(time.Duration(48) * time.Microsecond)
+	time.Sleep(time.Duration(45+rand.Intn(2+rand.Intn(5))) * time.Microsecond)
 
 	// write headers and window update
-	size := 384 + int(binary.BigEndian.Uint32(preface)%256)
+	length := 384 + int(binary.BigEndian.Uint32(preface)%256)
 	if rand.Intn(8+rand.Intn(10)) == 0 {
-		size += rand.Intn(128)
+		length += rand.Intn(128)
 	}
-	err = sendPaddingDataBlock(conn, size)
+	err = sendPaddingDataBlock(conn, length)
 	if err != nil {
 		return err
 	}
@@ -126,21 +126,21 @@ func simulateHTTP2Server(conn net.Conn, preface []byte) error {
 	time.Sleep(time.Duration(1200+rand.Intn(1000+rand.Intn(1000))) * time.Microsecond)
 
 	// send processed header
-	size = 64 + int(binary.BigEndian.Uint32(preface)%256)
+	length := 64 + int(binary.BigEndian.Uint32(preface)%256)
 	if rand.Intn(8+rand.Intn(10)) == 0 {
-		size += rand.Intn(64)
+		length += rand.Intn(64)
 	}
-	err = sendPaddingDataBlock(conn, size)
+	err = sendPaddingDataBlock(conn, length)
 	if err != nil {
 		return err
 	}
 
 	// send the first data block
-	size = 648 + int(binary.BigEndian.Uint32(preface)%256)
+	length = 648 + int(binary.BigEndian.Uint32(preface)%256)
 	if rand.Intn(8+rand.Intn(10)) == 0 {
-		size += rand.Intn(512)
+		length += rand.Intn(512)
 	}
-	err = sendPaddingDataBlock(conn, size)
+	err = sendPaddingDataBlock(conn, length)
 	if err != nil {
 		return err
 	}
@@ -164,15 +164,15 @@ func simulateHTTP2GoAway(conn net.Conn) error {
 }
 
 // +--------+---------+
-// |  size  | padding |
+// | length | padding |
 // +--------+---------+
 // | uint16 |   var   |
 // +--------+---------+
 
-func sendPaddingDataBlock(conn net.Conn, size int) error {
-	buf := bytes.NewBuffer(make([]byte, 0, 2+size))
-	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(size))) // #nosec G115
-	buf.Write(bytes.Repeat([]byte{0x00}, size))
+func sendPaddingDataBlock(conn net.Conn, length int) error {
+	buf := bytes.NewBuffer(make([]byte, 0, 2+length))
+	buf.Write(binary.BigEndian.AppendUint16(nil, uint16(length))) // #nosec G115
+	buf.Write(bytes.Repeat([]byte{0x00}, length))
 	_, err := buf.WriteTo(conn)
 	return err
 }
@@ -183,7 +183,7 @@ func receivePaddingData(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	size := int(binary.BigEndian.Uint16(buf))
-	_, err = io.CopyN(io.Discard, conn, int64(size))
+	length := int(binary.BigEndian.Uint16(buf))
+	_, err = io.CopyN(io.Discard, conn, int64(length))
 	return err
 }
