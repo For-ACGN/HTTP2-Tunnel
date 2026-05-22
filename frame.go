@@ -174,7 +174,7 @@ func (f *shapingFrame) Decode(r io.Reader) error {
 	return nil
 }
 
-// ---------------------------------------- data ----------------------------------------
+// ------------------------------------ session data ------------------------------------
 
 // +------+------------+--------+--------------+
 // | type | session id | length | session data |
@@ -182,7 +182,7 @@ func (f *shapingFrame) Decode(r io.Reader) error {
 // | byte |  16 byte   | uint16 |     var      |
 // +------+------------+--------+--------------+
 
-type dataFrame struct {
+type sessionDataFrame struct {
 	id     sessionID
 	aead   cipher.AEAD
 	buffer []byte
@@ -190,15 +190,15 @@ type dataFrame struct {
 	Data []byte
 }
 
-func newDataFrame(id sessionID, aead cipher.AEAD) *dataFrame {
-	return &dataFrame{
+func newSessionDataFrame(id sessionID, aead cipher.AEAD) *sessionDataFrame {
+	return &sessionDataFrame{
 		id:     id,
 		aead:   aead,
 		buffer: make([]byte, 2),
 	}
 }
 
-func (f *dataFrame) Encode(w io.Writer) error {
+func (f *sessionDataFrame) Encode(w io.Writer) error {
 	size := gcmNonceSize + len(f.Data) + f.aead.Overhead()
 	buffer := make([]byte, 1+len(f.id)+2+size)
 	buffer[0] = frameData
@@ -216,13 +216,13 @@ func (f *dataFrame) Encode(w io.Writer) error {
 	return err
 }
 
-func (f *dataFrame) Decode(r io.Reader) error {
+func (f *sessionDataFrame) Decode(r io.Reader) error {
 	_, err := io.ReadFull(r, f.buffer[:1])
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
 	if f.buffer[0] != frameData {
-		return errors.New("invalid frame type about data")
+		return errors.New("invalid frame type about session data")
 	}
 	_, err = io.ReadFull(r, f.id[:])
 	if err != nil {
@@ -230,22 +230,22 @@ func (f *dataFrame) Decode(r io.Reader) error {
 	}
 	_, err = io.ReadFull(r, f.buffer[:2])
 	if err != nil {
-		return errors.Wrap(err, "failed to read data payload length")
+		return errors.Wrap(err, "failed to read session data payload length")
 	}
 	length := binary.BigEndian.Uint16(f.buffer[:2])
 	payload := make([]byte, length)
 	_, err = io.ReadFull(r, payload)
 	if err != nil {
-		return errors.Wrap(err, "failed to read data payload")
+		return errors.Wrap(err, "failed to read session data payload")
 	}
 	if len(payload) < gcmNonceSize {
-		return errors.New("invalid data payload length")
+		return errors.New("invalid session data payload length")
 	}
 	nonce := payload[:gcmNonceSize]
 	ciphertext := payload[gcmNonceSize:]
 	f.Data, err = f.aead.Open(ciphertext[:0], nonce, ciphertext, nil)
 	if err != nil {
-		return errors.Wrap(err, "failed to decrypt data payload")
+		return errors.Wrap(err, "failed to decrypt session data payload")
 	}
 	return nil
 }
