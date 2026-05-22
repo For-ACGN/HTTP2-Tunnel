@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	framePing = iota + 1
-	frameSetting
-	frameShaping
-	frameData
+	frameTypePing = iota + 1
+	frameTypeSetting
+	frameTypeShaping
+	frameTypeNewSessionRequest
+	frameTypeNewSessionResponse
+	frameTypeSessionData
 )
 
 const gcmNonceSize = 12
@@ -47,7 +49,7 @@ func newPingFrame() *pingFrame {
 }
 
 func (f *pingFrame) Encode(w io.Writer) error {
-	_, err := w.Write([]byte{framePing})
+	_, err := w.Write([]byte{frameTypePing})
 	if err != nil {
 		return err
 	}
@@ -60,7 +62,7 @@ func (f *pingFrame) Decode(r io.Reader) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
-	if f.buffer[0] != framePing {
+	if f.buffer[0] != frameTypePing {
 		return errors.New("invalid frame type about ping")
 	}
 	_, err = io.CopyN(io.Discard, r, int64(len(pingPadding)))
@@ -92,7 +94,7 @@ func newSettingFrame() *settingFrame {
 }
 
 func (f *settingFrame) Encode(w io.Writer) error {
-	_, err := w.Write([]byte{frameSetting})
+	_, err := w.Write([]byte{frameTypeSetting})
 	if err != nil {
 		return err
 	}
@@ -105,7 +107,7 @@ func (f *settingFrame) Decode(r io.Reader) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
-	if f.buffer[0] != frameSetting {
+	if f.buffer[0] != frameTypeSetting {
 		return errors.New("invalid frame type about setting")
 	}
 	_, err = io.CopyN(io.Discard, r, int64(len(settingPadding)))
@@ -145,7 +147,7 @@ func (f *shapingFrame) Encode(w io.Writer) error {
 		return err
 	}
 	buf := bytes.NewBuffer(make([]byte, 0, 3+f.length))
-	buf.WriteByte(frameShaping)
+	buf.WriteByte(frameTypeShaping)
 	buf.Write(binary.BigEndian.AppendUint16(nil, f.length))
 	buf.Write(bytes.Repeat([]byte{0}, int(f.length)))
 	b := buf.Bytes()
@@ -159,7 +161,7 @@ func (f *shapingFrame) Decode(r io.Reader) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
-	if f.buffer[0] != frameShaping {
+	if f.buffer[0] != frameTypeShaping {
 		return errors.New("invalid frame type about shaping")
 	}
 	_, err = io.ReadFull(r, f.buffer[:2])
@@ -171,6 +173,106 @@ func (f *shapingFrame) Decode(r io.Reader) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to read shaping padding data")
 	}
+	return nil
+}
+
+// --------------------------------- new session request --------------------------------
+
+// +------+------------+--------------+---------+----------------+---------+--------------+---------+
+// | type | public key | network size | network |  address size  | address |  buffer size |  jitter |
+// +------+------------+--------------+---------+----------------+---------+--------------+---------+
+// | byte |  32 bytes  |    uint16    |   var   |     uint16     |   var   |    uint16    |  uint16 |
+// +------+------------+--------------+---------+----------------+---------+--------------+---------+
+
+type newSessionRequestFrame struct {
+	buffer []byte
+
+	PublicKey   []byte
+	Network     string
+	Address     string
+	BufferSize  int
+	JitterLevel int
+}
+
+func newNewSessionRequestFrame() *newSessionRequestFrame {
+	return &newSessionRequestFrame{
+		buffer: make([]byte, 2),
+	}
+}
+
+func (f *newSessionRequestFrame) Encode(w io.Writer) error {
+	netData := []byte(f.Network)
+	addrData := []byte(f.Address)
+	size := len(f.PublicKey) + 2 + len(netData) + 2 + len(addrData) + 2 + 2
+	buffer := make([]byte, 1+size)
+	buffer[0] = frameTypeNewSessionRequest
+	offset := 1
+	copy(buffer[offset:], f.PublicKey)
+	offset += len(f.PublicKey)
+	binary.BigEndian.PutUint16(buffer[offset:], uint16(len(netData)))
+	offset += 2
+	copy(buffer[offset:], netData)
+	offset += len(netData)
+	binary.BigEndian.PutUint16(buffer[offset:], uint16(len(addrData)))
+	offset += 2
+	copy(buffer[offset:], addrData)
+	offset += len(addrData)
+	binary.BigEndian.PutUint16(buffer[offset:], uint16(f.BufferSize)) // #nosec G115
+	offset += 2
+	binary.BigEndian.PutUint16(buffer[offset:], uint16(f.JitterLevel)) // #nosec G115
+	_, err := w.Write(buffer)
+	return err
+}
+
+func (f *newSessionRequestFrame) Decode(r io.Reader) error {
+	_, err := io.ReadFull(r, f.buffer[:1])
+	if err != nil {
+		return errors.Wrap(err, "failed to read frame type")
+	}
+	if f.buffer[0] != frameTypeNewSessionRequest {
+		return errors.New("invalid frame type about new session request")
+	}
+	f.PublicKey = make([]byte, 32)
+	_, err = io.ReadFull(r, f.PublicKey)
+	if err != nil {
+		return errors.Wrap(err, "failed to read public key")
+	}
+	_, err = io.ReadFull(r, f.buffer[:2])
+	if err != nil {
+		return errors.Wrap(err, "failed to read network size")
+	}
+	netLen := binary.BigEndian.Uint16(f.buffer[:2])
+	if netLen > 0 {
+		netBuf := make([]byte, netLen)
+		_, err = io.ReadFull(r, netBuf)
+		if err != nil {
+			return errors.Wrap(err, "failed to read network")
+		}
+		f.Network = string(netBuf)
+	}
+	_, err = io.ReadFull(r, f.buffer[:2])
+	if err != nil {
+		return errors.Wrap(err, "failed to read address size")
+	}
+	addrLen := binary.BigEndian.Uint16(f.buffer[:2])
+	if addrLen > 0 {
+		addrBuf := make([]byte, addrLen)
+		_, err = io.ReadFull(r, addrBuf)
+		if err != nil {
+			return errors.Wrap(err, "failed to read address")
+		}
+		f.Address = string(addrBuf)
+	}
+	_, err = io.ReadFull(r, f.buffer[:2])
+	if err != nil {
+		return errors.Wrap(err, "failed to read buffer size")
+	}
+	f.BufferSize = int(binary.BigEndian.Uint16(f.buffer[:2]))
+	_, err = io.ReadFull(r, f.buffer[:2])
+	if err != nil {
+		return errors.Wrap(err, "failed to read jitter level")
+	}
+	f.JitterLevel = int(binary.BigEndian.Uint16(f.buffer[:2]))
 	return nil
 }
 
@@ -201,7 +303,7 @@ func newSessionDataFrame(id sessionID, aead cipher.AEAD) *sessionDataFrame {
 func (f *sessionDataFrame) Encode(w io.Writer) error {
 	size := gcmNonceSize + len(f.Data) + f.aead.Overhead()
 	buffer := make([]byte, 1+len(f.id)+2+size)
-	buffer[0] = frameData
+	buffer[0] = frameTypeSessionData
 	copy(buffer[1:], f.id[:])
 	binary.BigEndian.PutUint16(buffer[1+len(f.id):], uint16(size)) // #nosec G115
 	payload := buffer[1+len(f.id)+2:]
@@ -221,7 +323,7 @@ func (f *sessionDataFrame) Decode(r io.Reader) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to read frame type")
 	}
-	if f.buffer[0] != frameData {
+	if f.buffer[0] != frameTypeSessionData {
 		return errors.New("invalid frame type about session data")
 	}
 	_, err = io.ReadFull(r, f.id[:])
